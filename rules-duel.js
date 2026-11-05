@@ -219,9 +219,38 @@ export function start(o) {
       }
     }
   }
+  // what it sounds like (the page plays it, if it has sounds: o.ui.sound(name)) — a monster leaving the field in battle
+  // is destroyed, otherwise it's an airy swish to the GY
+  let battle = false;
+  const sound = n => o.ui.sound && o.ui.sound(n);
+  function hear(m) {
+    switch (m.type) {
+      case 40: battle = false; if (m.player === 0) sound('turn'); break;
+      case 41: battle = false; break;
+      case 60: case 64: sound('summon'); break;
+      case 62: { const ty = (cards[m.code] || [])[2] || 0; sound(ty & (0x40 | 0x80 | 0x2000 | 0x800000 | 0x4000000) ? 'xsummon' : 'summon'); break; }
+      case 54: sound('set'); break;
+      case 70: sound('activate'); break;
+      case 74: if (chain.length > 1) sound('resolve'); break;
+      case 110: battle = true; sound('attack'); break;
+      case 90: sound('draw'); break;
+      case 91: sound('hit'); sound('lp'); break;
+      case 100: sound('lp'); break;
+      case 92: sound('gain'); break;
+      case 32: sound('shuffle'); break;
+      case 5: sound(m.player === 0 ? 'win' : 'lose'); break;
+      case 50: {
+        const f = m.from || {}, t = m.to || {};
+        if ((f.location === LOC.MZONE || f.location === LOC.SZONE) && (t.location === LOC.GRAVE || t.location === LOC.REMOVED))
+          sound(battle && f.location === LOC.MZONE ? 'destroy' : 'gy');
+        break;
+      }
+    }
+  }
   function tell(m) {
     const by = p => `<b>${esc(who(p))}</b>`;
     caption(m);
+    hear(m);
     if ([60, 62, 64, 70].includes(m.type)) lastActor = m.controller;
     if (m.type === 110) lastActor = m.card.controller;
     switch (m.type) {
