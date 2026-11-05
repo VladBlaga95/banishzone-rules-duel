@@ -15,6 +15,9 @@ version 3 or later** (see `LICENSE.md`), because it is built on two AGPL project
 
 Card statistics (type, Level, ATK/DEF, archetypes) come from Project Ignis' card database,
 <https://github.com/ProjectIgnis/BabelCDB>, at commit `781ec580fb82ced7cd17bae290ee2985824a0def`.
+EDOPro's own texts (what a card's choice says when its script names one by number, "Add the card(s) to your hand")
+come from Project Ignis' Distribution, <https://github.com/ProjectIgnis/Distribution> (AGPL-3.0), its
+`config/strings.conf` at commit `54a6e2395c532648ff762540e9615319fac4f51b`.
 Yu-Gi-Oh! is a trademark of Shueisha and Konami. This project is not affiliated with or endorsed by them.
 
 ## What's here
@@ -26,7 +29,7 @@ Yu-Gi-Oh! is a trademark of Shueisha and Konami. This project is not affiliated 
 | `rules-duel.js` | The page side: turns the engine's field into the duel board's drawing, and your taps into the engine's answers |
 | `lookahead.js` | The bot's look-ahead: tries a move on a copy of the duel to see where it leads |
 | `vendor/ocgcore-wasm/` | The engine (ocgcore-wasm 0.1.6: `dist/` and `lib/ocgcore.sync.wasm`, unmodified) |
-| `tools/fetch_data.py` | Fetches the card scripts and builds `cards.json` at the versions above (into `assets/duel-scripts/`) |
+| `tools/fetch_data.py` | Fetches the card scripts and builds `cards.json`, `strings.json` and `system.json` at the versions above (into `assets/duel-scripts/`) |
 
 The rest of BanishZone is not part of this program. That includes the duel board that draws the field
 (it receives plain data from `rules-duel.js`), the deck builder, accounts and the server. They talk to the
@@ -53,6 +56,7 @@ Nothing here is compiled except the engine. The `.js` files run as they are, in 
    build). The files this module uses are `lib/ocgcore.sync.wasm` and `dist/*.js`.
 
 **The card scripts and statistics** are not stored here. Run `python tools/fetch_data.py` to fetch Project
-Ignis' scripts and database at the commits named above and build `cards.json`, into `duel-scripts/`
+Ignis' scripts, database and system texts at the commits named above and build `cards.json`, `strings.json` and
+`system.json`, into `duel-scripts/`
 (in BanishZone itself, `assets/duel-scripts/`). The site serves that folder as `/duel-scripts/`, where
 `rules-duel.js` and `engine-worker.js` load it from.

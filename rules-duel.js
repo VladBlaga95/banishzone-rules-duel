@@ -18,6 +18,13 @@ const PHASES = { 1: 'Draw Phase', 2: 'Standby Phase', 4: 'Main Phase 1', 8: 'Bat
                  0x40: 'Battle Phase', 0x80: 'Battle Phase', 0x100: 'Main Phase 2', 0x200: 'End Phase' };
 const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 
+// (online, as the engine's second player: each message's sides swapped — player / controller 0 always you — and your
+//  answers' zones swapped back on their way to the engine)
+const SIDE_KEYS = new Set(['player', 'controller', 'triggering_controller']);
+const swapSides = x => Array.isArray(x) ? x.map(swapSides)
+  : x && typeof x === 'object' ? Object.fromEntries(Object.entries(x).map(([k, v]) => [k, SIDE_KEYS.has(k) && (v === 0 || v === 1) ? 1 - v : swapSides(v)]))
+  : x;
+
 /** A Deck Builder deck → the engine's {main, extra} codes, and what each card looks like. */
 export function deckCodes(deck, info) {
   const main = [], extra = [];
@@ -91,17 +98,28 @@ export function start(o) {
   // (the bot's side: its deck — or an endboard it pilots, with a deck to play on with, or none: then the practice
   //  ends with your turn)
   const board = o.bot.board ? boardPlacements(o.bot.board, info) : null;
-  const decks = [deckCodes(o.me.deck, info), o.bot.deck ? deckCodes(o.bot.deck, info) : { main: [], extra: [] }];
+  // (online — o.online: {send(answer)}, the opponent in o.bot — o.seat says which of the engine's players you are: the
+  //  coin toss's; the engine's player 0 goes first. Every answer, yours and theirs, comes back through apply(), in the
+  //  room's order, so both browsers' engines play the same duel)
+  const seat = o.seat ? 1 : 0, sides = x => (seat ? swapSides(x) : x);
+  const mineCodes = deckCodes(o.me.deck, info), theirCodes = o.bot.deck ? deckCodes(o.bot.deck, info) : { main: [], extra: [] };
+  const decks = seat ? [theirCodes, mineCodes] : [mineCodes, theirCodes];
+  // (the Combo Lab's Auto — o.lab: no one across the field; o.hand: your opening hand, those cards out of your Deck;
+  //  o.onAnswer(r): each answer you give, to record; o.replay: no prompts — answers come through apply(), and
+  //  o.onIdle() says when the engine waits for the next)
+  const hand = (o.hand || []).filter(code => { const i = mineCodes.main.indexOf(code); if (i < 0) return false; mineCodes.main.splice(i, 1); return true; });
   const names = Object.fromEntries(Object.entries(info).map(([k, v]) => [k, v.name]));
   const who = p => p === 0 ? 'You' : o.bot.name;
   const nm = code => (info[code] || {}).name || 'a card';
   const img = code => (info[code] || {}).img || `https://images.ygoprodeck.com/images/cards_small/${code}.jpg`;
   const big = code => (info[code] || {}).big || `https://images.ygoprodeck.com/images/cards/${code}.jpg`;
   const worker = new Worker(new URL('./engine-worker.js', import.meta.url), { type: 'module' });
-  let cards = {}, strs = {};
+  let cards = {}, strs = {}, sys = {};
   fetch((o.scripts || '/duel-scripts/') + 'cards.json').then(r => r.json()).then(c => { cards = c; }).catch(() => {});
   // (each card's effect texts: what an effect's button says — "Special Summon 1 "Power Patron" monster")
   fetch((o.scripts || '/duel-scripts/') + 'strings.json').then(r => r.json()).then(t => { strs = t; }).catch(() => {});
+  // (EDOPro's own texts, by number: what a choice says when a script names one — 573 "Add the card(s) to your hand")
+  fetch((o.scripts || '/duel-scripts/') + 'system.json').then(r => r.json()).then(t => { sys = t; }).catch(() => {});
   let field = null, ask = null, over = false, uidN = 0, turnPlayer = 0, turns = 0;
   // where each card is: "p:loc:seq" → uid (so a card glides from where it was to where it is)
   let at = {};
@@ -251,6 +269,7 @@ export function start(o) {
     const by = p => `<b>${esc(who(p))}</b>`;
     caption(m);
     hear(m);
+    if (m.type === 2 && m.hint_type === 3 && m.player === 0) selHint = m.hint;
     if ([60, 62, 64, 70].includes(m.type)) lastActor = m.controller;
     if (m.type === 110) lastActor = m.card.controller;
     switch (m.type) {
@@ -282,21 +301,32 @@ export function start(o) {
 
   // ── your prompts ─────────────────────────────────────────────────────────────────────────
   // an effect's description (the card's code and which of its texts): its text, as EDOPro shows it on its button —
-  // effectText() the text alone (or ''), desc() with the card's name when there's no text
+  // effectText() the text alone (or ''), desc() with the card's name when there's no text; a description with no
+  // code is one of EDOPro's own texts, by number (sysText: a choice's "Add the card(s) to your hand")
+  const sysText = (i, code) => (sys[i] || '').replace(/%ls/g, code ? nm(code) : 'a card').replace(/%d\s*/g, '');
   const effectText = d => {
     d = BigInt(d || 0); const c = Number(d >> 20n), i = Number(d & 0xfffffn);
     return c ? ((strs[c] || [])[i] || '') : '';
   };
   const desc = (d, code) => {
     d = BigInt(d || 0); const c = Number(d >> 20n), i = Number(d & 0xfffffn);
-    if (!c) return code ? nm(code) : `Option ${i + 1}`;
+    if (!c) return (i && sysText(i, code)) || (code ? nm(code) : `Option ${i + 1}`);
     return effectText(d) || `${nm(c)}${i ? ` — effect ${i + 1}` : ''}`;
   };
+  // what the next choice of cards is for, as the script says it (a hint, HINT_SELECTMSG: "Select the card(s) to add
+  // to your hand"): the prompt's title, how many in its line — else "Choose 2"
+  let selHint = null;
+  const howMany = m => m.min === m.max ? m.min : `${m.min}–${m.max}`;
+  const hintText = () => (selHint ? effectText(selHint) || (Number(BigInt(selHint) >> 20n) ? '' : sysText(Number(BigInt(selHint) & 0xfffffn))) : '');
+  const pickTitle = (m, verb = 'Choose') => hintText() || `${verb} ${howMany(m)}`;
+  const pickCount = (m, more = '') => (hintText() ? `Choose ${howMany(m)}${more ? ' — ' + more : '.'}` : more);
   let targeting = null;
   const reply = r => {
-    ask = null; placing = null; paintPlaces();
+    ask = null; placing = null; paintPlaces(); selHint = null;
     if (targeting) { for (const d of document.querySelectorAll('.rd-target, .rd-picked')) d.classList.remove('rd-target', 'rd-picked'); targeting = null; }
-    o.ui.prompt(null); highlight([]); worker.postMessage({ t: 'answer', r });
+    o.ui.prompt(null); highlight([]);
+    if (o.onAnswer) o.onAnswer(r);
+    if (o.online) o.online.send(sides(r)); else worker.postMessage({ t: 'answer', r });
   };
   // a zone to pick: the ones you can, lit on the field (the Extra Monster Zones are in your board's row: theirs
   // too, their left being your right)
@@ -366,10 +396,11 @@ export function start(o) {
       }
       case 12: P.title = `Use the effect of ${nm(m.code)}?`; P.text = effectText(m.description); P.cards = [{ code: m.code, label: nm(m.code) }];
         P.buttons.push({ label: 'Yes', r: { type: 2, yes: true }, go: true }, { label: 'No', r: { type: 2, yes: false } }); break;
-      case 13: P.title = desc(m.description) + '?'; P.buttons.push({ label: 'Yes', r: { type: 3, yes: true }, go: true }, { label: 'No', r: { type: 3, yes: false } }); break;
+      case 13: P.title = desc(m.description).replace(/\??$/, '?'); P.buttons.push({ label: 'Yes', r: { type: 3, yes: true }, go: true }, { label: 'No', r: { type: 3, yes: false } }); break;
       case 14: {
-        const from = Number(BigInt(m.options[0] || 0) >> 20n);
-        P.title = from ? `${nm(from)}: choose an effect` : 'Choose one';
+        // (the card whose texts they are: any option's — one may be EDOPro's own, "Add the card(s) to your hand")
+        const codes = m.options.map(d => Number(BigInt(d || 0) >> 20n)), from = codes.find(Boolean);
+        P.title = from ? `${nm(from)}: choose ${codes.every(Boolean) ? 'an effect' : 'one'}` : 'Choose one';
         if (from) P.cards = [{ code: from, label: nm(from) }];
         m.options.forEach((d, i) => P.buttons.push({ label: desc(d), r: { type: 4, index: i } }));
         break;
@@ -378,11 +409,20 @@ export function start(o) {
         [[1, 'Attack'], [4, 'Defense'], [8, 'Set (face-down Defense)'], [2, 'Face-down Attack']].forEach(([v, t]) => { if (m.positions & v) P.buttons.push({ label: t, r: { type: 11, position: v } }); });
         break;
       case 15: case 20: return pick(m, m.type === 20);
-      case 26:
-        P.title = `Choose ${m.min === m.max ? m.min : `${m.min}–${m.max}`}`;
-        P.cards = m.select_cards.map((c, i) => ({ code: c.code, label: (c.controller ? o.bot.name + '’s ' : '') + nm(c.code), r: { type: 7, index: i } }));
+      case 26: {   // cards picked one at a time (Fusion, Synchro, Link materials…): those picked so far (unselect_cards:
+        // tapped again, taken back — the answer's index counts on past select_cards) and those you can still pick;
+        // Done once enough are, Cancel (the summon, the effect) while the engine allows it — mostly with none picked
+        const picked = m.unselect_cards || [], who = c => (c.controller ? o.bot.name + '’s ' : '') + nm(c.code);
+        P.title = pickTitle(m);
+        P.text = pickCount(m, picked.length ? `${picked.length} chosen — tap one again to take it back.` : '');
+        P.list = true;
+        P.cards = [...picked.map((c, j) => ({ code: c.code, label: who(c), sub: 'Chosen — tap to take back', on: true, r: { type: 7, index: m.select_cards.length + j } })),
+                   ...m.select_cards.map((c, i) => ({ code: c.code, label: who(c), r: { type: 7, index: i } }))];
+        // (no answer means Done when it can finish, else Cancel)
         if (m.can_finish) P.buttons.push({ label: 'Done', r: { type: 7, index: null }, go: true });
+        else if (m.can_cancel) P.buttons.push({ label: 'Cancel', r: { type: 7, index: null } });
         break;
+      }
       case 142: {   // a card's name, declared: from the cards in this duel
         P.title = 'Declare a card name';
         P.cards = Object.keys(info).map(code => ({ code: +code, label: nm(+code), r: { type: 18, card: +code } }));
@@ -426,8 +466,8 @@ export function start(o) {
           d.classList.toggle('rd-picked', i >= 0 && picked.includes(i));
         }
         const done = picked.length >= m.min;
-        o.ui.prompt({ mode: 'target', title: `${tribute ? 'Tribute' : 'Choose'} ${m.min === m.max ? m.min : `${m.min}–${m.max}`}`,
-          text: `Tap ${m.max === 1 ? 'a lit card' : 'the lit cards'} on the field${picked.length ? ` — ${picked.length} chosen` : ''}.`,
+        o.ui.prompt({ mode: 'target', title: pickTitle(m, tribute ? 'Tribute' : 'Choose'),
+          text: pickCount(m, `tap ${m.max === 1 ? 'a lit card' : 'the lit cards'} on the field${picked.length ? ` — ${picked.length} chosen` : ''}.`).replace(/^t/, 'T'),
           buttons: [...(m.max > 1 || m.min > 1 ? [{ label: 'Confirm', r: { type: tribute ? 12 : 5, indicies: picked }, go: true, off: !done }] : []),
                     ...(m.can_cancel ? [{ label: 'Cancel', r: { type: tribute ? 12 : 5, indicies: null } }] : [])] }, reply);
       };
@@ -436,8 +476,8 @@ export function start(o) {
       return;
     }
     const paint = () => o.ui.prompt({
-      mode: 'pick', title: `${tribute ? 'Tribute' : 'Choose'} ${m.min === m.max ? m.min : `${m.min}–${m.max}`}`,
-      text: picked.length ? `${picked.length} chosen` : '',
+      mode: 'pick', title: pickTitle(m, tribute ? 'Tribute' : 'Choose'),
+      text: pickCount(m, picked.length ? `${picked.length} chosen` : ''),
       cards: m.selects.map((c, i) => ({ code: c.code, label: (c.controller ? o.bot.name + '’s ' : '') + nm(c.code), on: picked.includes(i), toggle: i })),
       buttons: [{ label: 'Confirm', r: { type: tribute ? 12 : 5, indicies: picked }, go: true, off: picked.length < m.min },
                 ...(m.can_cancel ? [{ label: 'Cancel', r: { type: tribute ? 12 : 5, indicies: null } }] : [])],
@@ -503,6 +543,7 @@ export function start(o) {
     if (d.t === 'log') { console.warn('[engine]', d.text); return; }
     if (d.t === 'replay') { o.onReplay && o.onReplay(d.answers); return; }
     if (d.t !== 'update') return;
+    if (seat) { d.msgs = swapSides(d.msgs); d.ask = swapSides(d.ask); d.field = [d.field[1], d.field[0]]; }
     for (const m of d.msgs) { if (m.type === 40) m.turnNo = ++turns; tell(m); }
     field = d.field;
     if (o.debug) o.debug.field = field;
@@ -536,10 +577,30 @@ export function start(o) {
     if (d.practiceOver) { over = true; o.ui.prompt(null); o.onPractice && o.onPractice(field); return; }
     if (over) { o.ui.prompt(null); o.onEnd && o.onEnd(); return; }
     ask = d.ask;
-    if (ask) promptFor(ask);
+    engineAsk = ask;
+    if ((o.online || o.replay) && feed()) { ask = null; return; }   // (an answer already in: given, no prompt)
+    if (ask && o.replay) { ask = null; o.ui.prompt({ mode: 'wait', title: 'The replay — its buttons below', text: '', buttons: [] }); if (o.onIdle) o.onIdle(); return; }
+    if (ask && o.online && ask.player !== 0) { ask = null; o.ui.prompt({ mode: 'wait', title: `${o.bot.name} is thinking`, text: '', buttons: [] }); }
+    else if (ask) promptFor(ask);
     else o.ui.prompt({ mode: 'wait', title: `${o.bot.name} is playing`, text: '', buttons: [] });
   };
-  worker.postMessage({ t: 'start', decks, board, bots: o.bots || [false, true], level: o.level, names, scripts: o.scripts || '/duel-scripts/', speed: o.speed || 'normal',
-                       seed: Math.floor(Math.random() * 2 ** 31) + 1 });
-  return { stop: () => worker.terminate(), replay: () => worker.postMessage({ t: 'replay' }), speed: v => worker.postMessage({ t: 'speed', v }) };
+  // (online: the answers in the room's order, each given when the engine waits for one)
+  const pending = [];
+  let engineAsk = null;
+  // (one from the player the engine isn't asking: dropped — a browser answers only for its own side)
+  function feed() {
+    while (engineAsk && pending.length) {
+      const { r, mine } = pending.shift();
+      if ((engineAsk.player === 0) !== mine) { console.warn('[online] an answer out of turn, dropped'); continue; }
+      engineAsk = null;
+      worker.postMessage({ t: 'answer', r });
+      return true;
+    }
+    return false;
+  }
+  worker.postMessage({ t: 'start', decks, board, hand: hand.length ? hand : null, lab: !!o.lab,
+                       bots: o.bots || (o.online ? [false, false] : [false, true]), level: o.level, names, scripts: o.scripts || '/duel-scripts/',
+                       speed: o.speed || 'normal', seed: o.seed || Math.floor(Math.random() * 2 ** 31) + 1 });
+  return { stop: () => worker.terminate(), replay: () => worker.postMessage({ t: 'replay' }), speed: v => worker.postMessage({ t: 'speed', v }),
+           apply: (r, mine) => { pending.push({ r, mine: !!mine }); feed(); } };
 }

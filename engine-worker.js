@@ -7,7 +7,9 @@
 //                   (board: an endboard for the bot's side — {cards: [{code, location, sequence, position}], lp}: you
 //                    play your turn against it — you draw and may attack — and with no deck of its own, the practice
 //                    ends as your turn does: {t: 'update', practiceOver: true})
-//                   names: {code: name} (the bot reads its cards by name)}
+//                   names: {code: name} (the bot reads its cards by name),
+//                   hand?: [codes] your opening hand, in your hand from the start (taken out of your Deck by the page),
+//                   lab?: the Combo Lab's Auto — no one across the field: the duel ends as your turn does, as a practice's)
 //                  {t: 'answer', r}           your answer to the prompt it last sent
 //                  {t: 'speed', v}            how fast the bot's plays go: 'slow' | 'normal' | 'fast'
 //   worker → page  {t: 'update', msgs, field, ask}   what happened (the engine's messages, simplified), the field
@@ -122,11 +124,11 @@ function run() {
 }
 // a duel as this one began — the real one (logged), or a copy for a trial
 function makeDuel(real) {
-  const { s, decks, board } = spec;
+  const { s, decks, board, hand } = spec;
   const h = lib.createDuel({
     flags: OcgDuelMode.MODE_MR5 | (board ? OcgDuelMode.ATTACK_FIRST_TURN : 0n), seed: [s, s * 3n + 1n, s * 7n + 5n, s * 11n + 9n],
-    team1: { startingLP: 8000, startingDrawCount: board ? 6 : 5, drawCountPerTurn: 1 },
-    team2: { startingLP: board ? board.lp : 8000, startingDrawCount: board ? 0 : 5, drawCountPerTurn: 1 },
+    team1: { startingLP: 8000, startingDrawCount: board ? 6 : hand ? 0 : 5, drawCountPerTurn: 1 },
+    team2: { startingLP: board ? board.lp : 8000, startingDrawCount: board || !decks[1].main.length ? 0 : 5, drawCountPerTurn: 1 },
     cardReader: cardData, scriptReader: script,
     errorHandler: real ? (type, text) => postMessage({ t: 'log', text: String(text) }) : () => {},
   });
@@ -135,6 +137,8 @@ function makeDuel(real) {
     for (const code of deck.main) lib.duelNewCard(h, { team, duelist: 0, code, controller: team, location: LOC.DECK, sequence: 0, position: 8 });
     for (const code of deck.extra) lib.duelNewCard(h, { team, duelist: 0, code, controller: team, location: LOC.EXTRA, sequence: 0, position: 8 });
   });
+  // (your opening hand, chosen: in your hand from the start)
+  if (hand) for (const code of hand) if (cards[code]) lib.duelNewCard(h, { team: 0, duelist: 0, code, controller: 0, location: LOC.HAND, sequence: 0, position: 10 });
   // (an endboard: each card where it sits, for the bot)
   if (board) for (const c of board.cards) if (cards[c.code] || c.code >= 990000000) lib.duelNewCard(h, { team: 1, duelist: 0, code: c.code, controller: 1, location: c.location, sequence: c.sequence, position: c.position });
   // (its monsters' ATK / DEF / Level as changed in the builder: an effect on each, from now till it leaves the field —
@@ -188,9 +192,9 @@ onmessage = async e => {
       const EXTRA = 0x40 | 0x2000 | 0x800000 | 0x4000000;
       const isExtra = code => ((cards[code] || [])[2] & EXTRA) !== 0;
       d.decks = d.decks.map(k => { const all = [...k.main, ...k.extra]; return { main: all.filter(c => !isExtra(c)), extra: all.filter(isExtra) }; });
-      spec = { s, decks: d.decks.map(k => ({ main: shuffle(k.main), extra: k.extra })), board: d.board || null };
-      // (an endboard with no deck behind it: the practice is your turn against it)
-      spec.endAfterTurn = !!d.board && !d.decks[1].main.length;
+      spec = { s, decks: d.decks.map(k => ({ main: shuffle(k.main), extra: k.extra })), board: d.board || null, hand: d.hand && d.hand.length ? d.hand : null };
+      // (an endboard with no deck behind it, or the Combo Lab's empty field: the practice is your turn)
+      spec.endAfterTurn = (!!d.board && !d.decks[1].main.length) || !!d.lab;
       handle = makeDuel(true);
       choose = [0, 1].map(seat => lookahead({ lib, makeDuel: () => makeDuel(false), decide, seat }));
       const names = d.names || {};

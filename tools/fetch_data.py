@@ -11,9 +11,12 @@ assets/duel-scripts/ (not in git — this fetches it again).
                          its release-*.cdb (sets just released)
   strings.json           each card's effect texts — what an effect's button says — {code: [str1, str2, …]}
                          (no text: the engine doesn't need it)
+  system.json            EDOPro's own texts, by number — what a choice says when a script names one of them
+                         ("Add to hand", 573) — {number: text}, from Project Ignis Distribution's config/strings.conf
   version.json           the versions fetched
 
-Change SCRIPTS_AT / CDB_AT to update (python … --latest prints the newest commits; --cards remakes cards.json only).
+Change SCRIPTS_AT / CDB_AT / SYSTEM_AT to update (python … --latest prints the newest commits; --cards remakes
+cards.json only, --system system.json only).
 """
 import io
 import json
@@ -26,6 +29,7 @@ from pathlib import Path
 
 SCRIPTS_AT = "2bd02f71383b87d7dee174909a96d10491930c45"    # ProjectIgnis/CardScripts, 2026-11-03
 CDB_AT = "781ec580fb82ced7cd17bae290ee2985824a0def"        # ProjectIgnis/BabelCDB, 2026-11-03
+SYSTEM_AT = "54a6e2395c532648ff762540e9615319fac4f51b"     # ProjectIgnis/Distribution, 2026-08-12
 MODULE = Path(__file__).resolve().parents[1]
 # (in BanishZone: assets/duel-scripts/ beside the module; in the module's own repository: duel-scripts/ in it)
 OUT = MODULE.parent / "duel-scripts" if MODULE.parent.name == "assets" else MODULE / "duel-scripts"
@@ -91,21 +95,41 @@ def cards():
     return len(out)
 
 
+def system():
+    """system.json: the "!system <number> <text>" lines of Distribution's config/strings.conf at SYSTEM_AT."""
+    text = get(f"https://raw.githubusercontent.com/ProjectIgnis/Distribution/{SYSTEM_AT}/config/strings.conf").decode("utf-8")
+    out = {}
+    for line in text.splitlines():
+        kind, _, rest = line.strip().partition(" ")
+        num, _, words = rest.partition(" ")
+        if kind == "!system" and num.isdigit() and words.strip():
+            out[int(num)] = words.strip()
+    (OUT / "system.json").write_text(json.dumps(out, separators=(",", ":"), ensure_ascii=False), encoding="utf-8")
+    return len(out)
+
+
 def main():
     if "--latest" in sys.argv:
-        for repo in ("CardScripts", "BabelCDB"):
+        for repo in ("CardScripts", "BabelCDB", "Distribution"):
             d = json.loads(get(f"https://api.github.com/repos/ProjectIgnis/{repo}/commits/master"))
             print(repo, d["sha"], d["commit"]["committer"]["date"])
         return
     OUT.mkdir(parents=True, exist_ok=True)
+    versions = {"scripts": SCRIPTS_AT, "cdb": CDB_AT, "system": SYSTEM_AT}
+    if "--system" in sys.argv:                    # (--system: EDOPro's own texts again, the rest as it is)
+        print(f"{OUT}: {system()} system texts")
+        (OUT / "version.json").write_text(json.dumps(versions), encoding="utf-8")
+        return
     n = 0
     if "--cards" not in sys.argv:                 # (--cards: the card data again, the scripts as they are)
         print("Fetching the card scripts…")
         n = scripts()
     print("Reading the card database…")
     c = cards()
-    (OUT / "version.json").write_text(json.dumps({"scripts": SCRIPTS_AT, "cdb": CDB_AT}), encoding="utf-8")
-    print(f"{OUT}: {n} scripts, {c} cards")
+    print("Reading EDOPro's own texts…")
+    t = system()
+    (OUT / "version.json").write_text(json.dumps(versions), encoding="utf-8")
+    print(f"{OUT}: {n} scripts, {c} cards, {t} system texts")
 
 
 if __name__ == "__main__":
