@@ -120,7 +120,7 @@ export function start(o) {
   fetch((o.scripts || '/duel-scripts/') + 'strings.json').then(r => r.json()).then(t => { strs = t; }).catch(() => {});
   // (EDOPro's own texts, by number: what a choice says when a script names one — 573 "Add the card(s) to your hand")
   fetch((o.scripts || '/duel-scripts/') + 'system.json').then(r => r.json()).then(t => { sys = t; }).catch(() => {});
-  let field = null, ask = null, over = false, uidN = 0, turnPlayer = 0, turns = 0;
+  let field = null, ask = null, over = false, winner = -1, uidN = 0, turnPlayer = 0, turns = 0;
   // where each card is: "p:loc:seq" → uid (so a card glides from where it was to where it is)
   let at = {};
   const cardOf = {};            // uid → code
@@ -294,7 +294,7 @@ export function start(o) {
       case 91: o.ui.log(`${by(m.player)} took ${m.amount} damage`); fx.lp[m.player] -= m.amount; break;
       case 92: o.ui.log(`${by(m.player)} gained ${m.amount} LP`); fx.lp[m.player] += m.amount; break;
       case 100: o.ui.log(`${by(m.player)} paid ${m.amount} LP`); fx.lp[m.player] -= m.amount; break;
-      case 5: over = true; o.ui.log(`<div class="t">${m.player === 0 ? 'You win!' : esc(o.bot.name) + ' wins.'}</div>`); break;
+      case 5: over = true; winner = m.player; o.ui.log(`<div class="t">${m.player === 0 ? 'You win!' : esc(o.bot.name) + ' wins.'}</div>`); break;
       case 1: o.ui.log('<span class="sys">The engine refused that — choose again.</span>'); break;
     }
   }
@@ -573,9 +573,10 @@ export function start(o) {
     o.boards.mine.render(mine, opt[0]);
     o.boards.theirs.render(theirs, opt[1]);
     markEmz(mine);
+    if (o.onUpdate) o.onUpdate(mine, theirs);           // (the boards as they are now: a page's own counts and plates)
     fx.lp = [0, 0];
     if (d.practiceOver) { over = true; o.ui.prompt(null); o.onPractice && o.onPractice(field); return; }
-    if (over) { o.ui.prompt(null); o.onEnd && o.onEnd(); return; }
+    if (over) { o.ui.prompt(null); o.onEnd && o.onEnd(winner === 0); return; }
     ask = d.ask;
     engineAsk = ask;
     if ((o.online || o.replay) && feed()) { ask = null; return; }   // (an answer already in: given, no prompt)
