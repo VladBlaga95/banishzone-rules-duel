@@ -169,7 +169,10 @@ ${board.mods.map(m => `rd_mod(1, ${m.sequence}, ${n(m.atk)}, ${n(m.def)}, ${n(m.
   lib.startDuel(h);
   return h;
 }
-function answer(r) { answers.push(r); lib.duelSetResponse(handle, r); }
+function answer(r) {
+  answers.push(r);
+  lib.duelSetResponse(handle, r && r.type === 16 ? { ...r, races: (r.races || []).map(x => BigInt(x)) } : r);   // (a Type: 64-bit)
+}
 function post(msgs, ask, practice) { postMessage({ t: 'update', msgs: plain(msgs), field: field(), ask: ask && plain(ask), turn: ctx.turn, practiceOver: !!practice }); }
 
 onmessage = async e => {

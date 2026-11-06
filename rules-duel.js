@@ -25,6 +25,11 @@ const swapSides = x => Array.isArray(x) ? x.map(swapSides)
   : x && typeof x === 'object' ? Object.fromEntries(Object.entries(x).map(([k, v]) => [k, SIDE_KEYS.has(k) && (v === 0 || v === 1) ? 1 - v : swapSides(v)]))
   : x;
 
+// a Type's and an Attribute's bit is its place here (ANNOUNCE_RACE, ANNOUNCE_ATTRIB)
+const RACES = ['Warrior', 'Spellcaster', 'Fairy', 'Fiend', 'Zombie', 'Machine', 'Aqua', 'Pyro', 'Rock', 'Winged Beast', 'Plant', 'Insect', 'Thunder', 'Dragon',
+               'Beast', 'Beast-Warrior', 'Dinosaur', 'Fish', 'Sea Serpent', 'Reptile', 'Psychic', 'Divine-Beast', 'Creator God', 'Wyrm', 'Cyberse', 'Illusion'];
+const ATTRS = ['EARTH', 'WATER', 'FIRE', 'WIND', 'LIGHT', 'DARK', 'DIVINE'];
+
 /** A Deck Builder deck → the engine's {main, extra} codes, and what each card looks like. */
 export function deckCodes(deck, info) {
   const main = [], extra = [];
@@ -288,10 +293,10 @@ export function start(o) {
         // (the bot's activation: its card big for a moment, so you see what it played)
         if (m.controller === 1 && o.ui.flash) o.ui.flash({ code: m.code, name: nm(m.code), big: big(m.code), link: chain.length });
         break;
-      case 31: {   // cards revealed (CONFIRM_CARDS) — to you: the other player's shown big, each named in the log
+      case 31: {   // cards shown to you (CONFIRM_CARDS) — the other player's: shown big, each named in the log
         const theirs = (m.cards || []).filter(c => c.controller !== m.player && c.code);
         if (m.player !== 0 || !theirs.length) break;
-        o.ui.log(`${by(1)} revealed ${theirs.map(c => esc(nm(c.code))).join(', ')}`);
+        o.ui.log(`Shown to you — ${by(1)}’s ${theirs.map(c => esc(nm(c.code))).join(', ')}`);
         if (o.ui.flash) o.ui.flash({ code: theirs[0].code, name: nm(theirs[0].code), big: big(theirs[0].code), label: theirs.length > 1 ? `Revealed · ${theirs.length} cards` : 'Revealed' });
         break;
       }
@@ -312,7 +317,11 @@ export function start(o) {
   // an effect's description (the card's code and which of its texts): its text, as EDOPro shows it on its button —
   // effectText() the text alone (or ''), desc() with the card's name when there's no text; a description with no
   // code is one of EDOPro's own texts, by number (sysText: a choice's "Add the card(s) to your hand")
-  const sysText = (i, code) => (sys[i] || '').replace(/%ls/g, code ? nm(code) : 'a card').replace(/%d\s*/g, '');
+  const sysText = (i, code, where) => { let k = 0; return (sys[i] || '').replace(/%ls/g, () => (k++ ? where || 'the field' : code ? nm(code) : 'a card')).replace(/%d\s*/g, ''); };
+  const PLACE = { [LOC.HAND]: 'your hand', [LOC.MZONE]: 'the Monster Zone', [LOC.SZONE]: 'the Spell & Trap Zone', [LOC.GRAVE]: 'the GY', [LOC.REMOVED]: 'banishment', [LOC.DECK]: 'the Deck', [LOC.EXTRA]: 'the Extra Deck' };
+  // (a card's effect texts, as its database has them — what a trigger asked about with no text of its own can be)
+  // (an option's or a prompt's own words — "Special Summon it", "Select the card…" — left out: they aren't effects)
+  const textsOf = code => ((strs[code] || []).filter(t => t && t.length >= 28 && !/^Select |^Choose |\?$/.test(t))).slice(0, 4);
   const effectText = d => {
     d = BigInt(d || 0); const c = Number(d >> 20n), i = Number(d & 0xfffffn);
     return c ? ((strs[c] || [])[i] || '') : '';
@@ -403,7 +412,13 @@ export function start(o) {
         if (!m.forced) P.buttons.push({ label: 'No', r: { type: 8, index: null }, go: true });
         break;
       }
-      case 12: P.title = `Use the effect of ${nm(m.code)}?`; P.text = effectText(m.description); P.cards = [{ code: m.code, label: nm(m.code) }];
+      case 12: {
+        const own = effectText(m.description), codeless = !Number(BigInt(m.description || 0) >> 20n), list = own ? [] : textsOf(m.code);
+        P.title = `Use the effect of ${nm(m.code)}?`;
+        // (the engine's own wording — "Activate the Trigger Effect of … from […]?" — names no effect: said plainly, the card's effects under it)
+        P.text = own || (codeless && list.length ? `Its trigger effect, from ${PLACE[m.location] || 'the field'}${list.length > 1 ? ' — its effects:' : ':'}` : '');
+        P.cards = [{ code: m.code, label: nm(m.code), sub: own || (list.length === 1 ? list[0] : list.length ? list.map((t, i) => `${i + 1}. ${t}`).join('\n') : '') }];
+      }
         P.buttons.push({ label: 'Yes', r: { type: 2, yes: true }, go: true }, { label: 'No', r: { type: 2, yes: false } }); break;
       case 13: P.title = desc(m.description).replace(/\??$/, '?'); P.buttons.push({ label: 'Yes', r: { type: 3, yes: true }, go: true }, { label: 'No', r: { type: 3, yes: false } }); break;
       case 14: {
@@ -422,15 +437,22 @@ export function start(o) {
         // tapped again, taken back — the answer's index counts on past select_cards) and those you can still pick;
         // Done once enough are, Cancel (the summon, the effect) while the engine allows it — mostly with none picked
         const picked = m.unselect_cards || [], who = c => (c.controller ? o.bot.name + '’s ' : '') + nm(c.code);
-        P.title = pickTitle(m);
-        P.text = pickCount(m, picked.length ? `${picked.length} chosen — tap one again to take it back.` : '');
-        P.list = true;
-        P.cards = [...picked.map((c, j) => ({ code: c.code, label: who(c), sub: 'Chosen — tap to take back', on: true, r: { type: 7, index: m.select_cards.length + j } })),
-                   ...m.select_cards.map((c, i) => ({ code: c.code, label: who(c), r: { type: 7, index: i } }))];
-        // (no answer means Done when it can finish, else Cancel)
-        if (m.can_finish) P.buttons.push({ label: 'Done', r: { type: 7, index: null }, go: true });
-        else if (m.can_cancel) P.buttons.push({ label: 'Cancel', r: { type: 7, index: null } });
-        break;
+        const last = picked.length + 1 >= m.max;               // (the next pick would complete it: held till you Confirm)
+        let held = -1;
+        const paint26 = () => {
+          const Q = { mode: 'pick', list: true, title: pickTitle(m), buttons: [],
+            text: pickCount(m, picked.length || held >= 0 ? `${picked.length + (held >= 0 ? 1 : 0)} chosen — tap one again to take it back.` : '') };
+          Q.cards = [...picked.map((c, j) => ({ code: c.code, label: who(c), sub: 'Chosen — tap to take back', on: true, r: { type: 7, index: m.select_cards.length + j } })),
+                     ...m.select_cards.map((c, i) => ({ code: c.code, label: who(c), on: i === held, sub: i === held ? 'Chosen — tap to take back' : '', toggle: last ? i : undefined, r: last ? undefined : { type: 7, index: i } }))];
+          if (held >= 0) Q.buttons.push({ label: 'Confirm', r: { type: 7, index: held }, go: true });
+          // (no answer means Done when it can finish, else Cancel)
+          else if (m.can_finish) Q.buttons.push({ label: 'Done', r: { type: 7, index: null }, go: true });
+          if (held < 0 && !m.can_finish && m.can_cancel) Q.buttons.push({ label: 'Cancel', r: { type: 7, index: null } });
+          o.ui.prompt(Q, r => { if (r && r.toggle !== undefined) { held = held === r.toggle ? -1 : r.toggle; paint26(); return; } reply(r); });
+        };
+        highlight([]);
+        paint26();
+        return;
       }
       case 142: {   // a card's name, declared: one the card's filter accepts (m.opcodes) — the handful listed, many found by name
         const ok = declarable(m.opcodes), all = Object.keys(cards).map(Number).filter(ok), few = all.length <= 120, set = new Set(all);
@@ -470,7 +492,30 @@ export function start(o) {
         paintPlaces();
         return;
       }
-      default: {   // (a sum, a number, a Type or Attribute: chosen for you for now)
+      case 140: case 141: {   // a Type (ANNOUNCE_RACE) or an Attribute (ANNOUNCE_ATTRIB) — m.count of them, from m.available
+        const race = m.type === 140, names = race ? RACES : ATTRS, avail = BigInt(m.available || 0), chosen = [];
+        const opts = names.map((n, i) => [n, 1n << BigInt(i)]).filter(([, bit]) => avail & bit);
+        const paintA = () => o.ui.prompt({ mode: 'ask', title: hintText() || (race ? 'Declare a Type' : 'Declare an Attribute'),
+          text: m.count > 1 ? `Choose ${m.count} — ${chosen.length} chosen` : '',
+          buttons: [...opts.map(([n, bit]) => ({ label: (chosen.includes(bit) ? '✓ ' : '') + n, r: { pick: bit } })),
+                    ...(m.count > 1 ? [{ label: 'Confirm', r: { done: true }, go: true, off: chosen.length !== m.count }] : [])] },
+          r => {
+            if (r.pick !== undefined) { const i = chosen.indexOf(r.pick); if (i >= 0) chosen.splice(i, 1); else if (chosen.length < m.count) chosen.push(r.pick); if (m.count > 1) { paintA(); return; } }
+            if (chosen.length !== m.count) { paintA(); return; }
+            reply(race ? { type: 16, races: chosen.map(String) } : { type: 17, attributes: chosen.map(Number) });
+          });
+        paintA();
+        return;
+      }
+      case 132:     // rock-paper-scissors
+        P.title = 'Rock, paper, scissors';
+        ['Scissors', 'Rock', 'Paper'].forEach((n, i) => P.buttons.push({ label: n, r: { type: 20, value: i + 1 } }));
+        break;
+      case 143:     // a number (ANNOUNCE_NUMBER): one of m.options
+        P.title = hintText() || 'Declare a number';
+        m.options.forEach((v, i) => P.buttons.push({ label: String(Number(BigInt(v) & 0xffffffffn)), r: { type: 19, value: i } }));
+        break;
+      default: {   // (a sum, counters, an order: chosen for you for now)
         import('./bot.js').then(({ decide }) => reply(decide(m, { lib: null, handle: null, cards: {}, turn: 0, phase: '', level: 'normal' }))).catch(() => {});
         return;
       }

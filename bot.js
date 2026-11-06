@@ -116,8 +116,11 @@ export function decide(msg, ctx) {
     case 25: return { type: 15, order: null };
     case 21: return { type: 15, order: null };
     case 132: return { type: 20, value: 1 };
-    case 140: return { type: 16, races: [] };
-    case 141: return { type: 17, attributes: [] };
+    case 140: case 141: {   // a Type / an Attribute: the first m.count of those it may (an empty answer the engine refuses)
+      const avail = BigInt(msg.available || 0), bits = [];
+      for (let i = 0n; i < 64n && bits.length < (msg.count || 1); i++) if (avail & (1n << i)) bits.push(1n << i);
+      return msg.type === 140 ? { type: 16, races: bits.map(String) } : { type: 17, attributes: bits.map(Number) };
+    }
     case 143: return { type: 19, value: 0 };
   }
   throw new Error('the bot has no answer for message ' + msg.type);
