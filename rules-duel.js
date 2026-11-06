@@ -151,14 +151,14 @@ export function start(o) {
         const k = `${p}:${loc}:${seq}`, u = take(k, c.code);
         next[k] = u;
         const i = info[c.code] || {};
+        const own = i.token ? [i.atk, i.def] : cards[c.code] ? [cards[c.code][6], cards[c.code][7]] : null;
         s.cards[u] = i.token
           ? { id: '', name: i.name, token: true, frame: 'token', type: 'Token Monster', img: '', big: '', art: i.art, atk: i.atk, def: i.def, level: i.level, race: i.race, attribute: i.attribute }
           : { id: c.code, name: nm(c.code), img: img(c.code), big: big(c.code), frame: i.frame || '', type: i.type || '',
-              extra: !!(c.type & EXTRA_TYPES), ...(c.type & T.MONSTER ? { atk: c.atk, def: c.def } : {}) };
+              extra: !!(c.type & EXTRA_TYPES), ...(c.type & T.MONSTER ? { atk: own ? own[0] : c.atk, def: own ? own[1] : c.def } : {}) };
         const down = (c.pos & 0xa) !== 0, def = loc === LOC.MZONE && (c.pos & 0xc) !== 0;
         s.flags[u] = { face: down || (loc === LOC.EXTRA && !(c.pos & 0x5)) ? 'down' : 'up', pos: def ? 'def' : 'atk' };
         // (a face-up monster's ATK / DEF as the engine has it now, when it isn't the card's own: shown changed)
-        const own = i.token ? [i.atk, i.def] : cards[c.code] ? [cards[c.code][6], cards[c.code][7]] : null;
         if (loc === LOC.MZONE && !down && own && (c.atk !== own[0] || c.def !== own[1])) s.flags[u].mods = { atk: c.atk, def: c.def };
         s.zones[zone].push(u);
       };
@@ -203,7 +203,8 @@ export function start(o) {
 
   // ── what happened, in words ──────────────────────────────────────────────────────────────
   const fx = { lit: null, lp: [0, 0] };
-  let chain = [], lastActor = -1;          // the chain open (links: {n, code, controller}); who last made a move
+  let chain = [], lastActor = -1;          // the chain open (links: {n, code, controller, location, sequence}); who last made a move
+  let targeted = [];                        // the cards the chain's effects target ("p:loc:seq"), marked till it's over
   const plays = [];                         // this update's plays, for the board: {kind, code, controller, location, sequence}
   // a play shown on the table as it happens (the bot's, and what happens to your cards): o.ui.play({code, text, side})
   const play = (side, code, text) => o.ui.play && o.ui.play({ side, code, text, img: code ? img(code) : '' });
@@ -282,13 +283,21 @@ export function start(o) {
       case 54: o.ui.log(`${by(m.controller)} Set a card`); break;
       case 70:
         o.ui.log(`${by(m.controller)} activated ${esc(nm(m.code))}${m.chain_size > 1 ? ` (Chain Link ${m.chain_size})` : ''}`);
-        chain.push({ n: m.chain_size || chain.length + 1, code: m.code, controller: m.controller });
+        chain.push({ n: m.chain_size || chain.length + 1, code: m.code, controller: m.controller, location: m.location, sequence: m.sequence });
         plays.push({ kind: 'activate', ...m });
         // (the bot's activation: its card big for a moment, so you see what it played)
         if (m.controller === 1 && o.ui.flash) o.ui.flash({ code: m.code, name: nm(m.code), big: big(m.code), link: chain.length });
         break;
+      case 31: {   // cards revealed (CONFIRM_CARDS) — to you: the other player's shown big, each named in the log
+        const theirs = (m.cards || []).filter(c => c.controller !== m.player && c.code);
+        if (m.player !== 0 || !theirs.length) break;
+        o.ui.log(`${by(1)} revealed ${theirs.map(c => esc(nm(c.code))).join(', ')}`);
+        if (o.ui.flash) o.ui.flash({ code: theirs[0].code, name: nm(theirs[0].code), big: big(theirs[0].code), label: theirs.length > 1 ? `Revealed · ${theirs.length} cards` : 'Revealed' });
+        break;
+      }
       case 73: o.ui.log(`<span class="sys">The chain resolves</span>`); break;
-      case 74: chain = []; break;
+      case 74: chain = []; targeted = []; break;
+      case 83: for (const c of m.cards || []) targeted.push(`${c.controller}:${c.location}:${c.sequence}`); break;   // (BECOME_TARGET)
       case 110: o.ui.log(`${by(m.card.controller)} attacked${m.target ? '' : ' directly'}`); break;
       case 90: if (m.player === 0) o.ui.log(`You drew ${m.drawn.map(d => esc(nm(d.code))).join(', ')}`); else o.ui.log(`${by(1)} drew ${m.drawn.length}`); break;
       case 91: o.ui.log(`${by(m.player)} took ${m.amount} damage`); fx.lp[m.player] -= m.amount; break;
@@ -423,10 +432,26 @@ export function start(o) {
         else if (m.can_cancel) P.buttons.push({ label: 'Cancel', r: { type: 7, index: null } });
         break;
       }
-      case 142: {   // a card's name, declared: from the cards in this duel
-        P.title = 'Declare a card name';
-        P.cards = Object.keys(info).map(code => ({ code: +code, label: nm(+code), r: { type: 18, card: +code } }));
-        break;
+      case 142: {   // a card's name, declared: one the card's filter accepts (m.opcodes) — the handful listed, many found by name
+        const ok = declarable(m.opcodes), all = Object.keys(cards).map(Number).filter(ok), few = all.length <= 120, set = new Set(all);
+        const item = (code, label) => ({ code, label, r: { type: 18, card: code } });
+        P.title = hintText() || 'Declare a card name';
+        P.text = `${all.length} card name${all.length === 1 ? '' : 's'} can be declared${few ? '' : ' — search for one'}.`;
+        P.list = true; P.cards = [];
+        P.search = async q => {
+          q = q.trim().toLowerCase();
+          if (few) { const list = await named(all); return q ? list.filter(c => c.label.toLowerCase().includes(q)) : list; }
+          if (q.length < 2) return [];
+          const hits = await fetch('/card-search?q=' + encodeURIComponent(q)).then(r => r.json()).catch(() => []);
+          return hits.filter(h => set.has(+h.id)).slice(0, 40).map(h => item(+h.id, h.name));
+        };
+        const named = async codes => {
+          const want = codes.filter(c => !(info[c] || {}).name && !(known[c] || {}).name);
+          for (let k = 0; k < want.length; k += 150) Object.assign(known, await fetch('/deck-cards?ids=' + want.slice(k, k + 150).join(',')).then(r => r.json()).catch(() => ({})));
+          return codes.map(c => item(c, (info[c] || {}).name || (known[c] || {}).name || `Card ${c}`)).sort((a, b) => a.label.localeCompare(b.label));
+        };
+        P.search('').then(list => { P.cards = list; highlight([]); o.ui.prompt(P, reply); });
+        return;
       }
       case 18: case 24: {   // a zone: where a card goes (18), or one to choose for an effect (24) — tapped on the field
         // (field_mask: a bit set is a zone you can't pick; the low 16 bits yours — Monster Zones 0–6, Spell & Trap
@@ -452,6 +477,42 @@ export function start(o) {
     }
     highlight(Object.keys(onCard));
     o.ui.prompt(P, reply);
+  }
+  // a declaration's filter: its opcodes (constant.lua's OPCODE_*) run as a stack, as EDOPro's own client does →
+  // code → whether that card's name can be declared
+  const known = {};                         // (names fetched for a declaration: /deck-cards)
+  function declarable(opcodes) {
+    const ops = (opcodes || []).map(x => BigInt(x)), O = k => 0x4000000000000000n + (BigInt(k) << 32n);
+    const [ADD, SUB, MUL, DIV, AND, OR, NEG, NOT, BAND, BOR] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9].map(O);
+    const [BNOT, BXOR, LSHIFT, RSHIFT, ALIASES, TOKENS] = [0x10, 0x11, 0x12, 0x13, 0x14, 0x15].map(O);
+    const [ISCODE, ISSETCARD, ISTYPE, ISRACE, ISATTRIBUTE, GETCODE, GETSETCARD, GETTYPE, GETRACE, GETATTRIBUTE] = [0x100, 0x101, 0x102, 0x103, 0x104, 0x105, 0x106, 0x107, 0x108, 0x109].map(O);
+    const B = v => (v ? 1n : 0n);
+    return code => {
+      const c = cards[code];
+      if (!c) return false;
+      const [alias, sets, type, , attr, race] = c, st = [];
+      let aliases = false, tokens = false;
+      const two = f => { if (st.length >= 2) { const r = st.pop(), l = st.pop(); st.push(f(l, r)); } };
+      const one = f => { if (st.length) st.push(f(st.pop())); };
+      for (const op of ops) {
+        switch (op) {
+          case ADD: two((l, r) => l + r); break; case SUB: two((l, r) => l - r); break; case MUL: two((l, r) => l * r); break;
+          case DIV: two((l, r) => (r ? l / r : l)); break; case AND: two((l, r) => B(l && r)); break; case OR: two((l, r) => B(l || r)); break;
+          case NEG: one(v => -v); break; case NOT: one(v => B(!v)); break; case BAND: two((l, r) => l & r); break; case BOR: two((l, r) => l | r); break;
+          case BNOT: one(v => ~v); break; case BXOR: two((l, r) => l ^ r); break; case LSHIFT: two((l, r) => l << r); break; case RSHIFT: two((l, r) => l >> r); break;
+          case ALIASES: aliases = true; break; case TOKENS: tokens = true; break;
+          case ISCODE: one(v => B(BigInt(code) === v)); break;
+          case ISSETCARD: one(v => B((sets || []).some(x => (BigInt(x) & 0xfffn) === (v & 0xfffn) && (BigInt(x) & v) === v))); break;
+          case ISTYPE: one(v => B(BigInt(type) & v)); break; case ISRACE: one(v => B(BigInt(race) & v)); break; case ISATTRIBUTE: one(v => B(BigInt(attr) & v)); break;
+          case GETCODE: st.push(BigInt(code)); break; case GETSETCARD: st.push(BigInt((sets || [])[0] || 0)); break; case GETTYPE: st.push(BigInt(type)); break;
+          case GETRACE: st.push(BigInt(race)); break; case GETATTRIBUTE: st.push(BigInt(attr)); break;
+          default: st.push(op);
+        }
+      }
+      if (st.length !== 1 || st[0] === 0n) return false;
+      // (an alternate artwork: only when it says so; a Token neither — but Marine Dolphin and Twinkle Moss, which are their own cards)
+      return code === 78734254 || code === 13857930 || ((aliases || !alias) && (tokens || (type & 0x4001) !== 0x4001));
+    };
   }
   // cards to choose (targets, costs, Tributes, materials): a sheet of them, as many as it takes
   function pick(m, tribute) {
@@ -553,8 +614,16 @@ export function start(o) {
     const find = (st, code) => { const us = Object.keys(st.cards).filter(u => cardOf[u] === code); return us.find(u => !['deck', 'hand', 'gy', 'banished', 'extra'].some(z => st.zones[z].includes(u))) || us[0]; };
     const opt = [{ lpChange: fx.lp[0] || undefined }, { lpChange: fx.lp[1] || undefined }];
     const board = u => (mine.cards[u] ? 0 : 1);
+    // (a card the engine names by its place — its own, on its player's board: the same card in the other player's
+    //  hand isn't it — else by its code, its player's board first)
+    const locate = l => {
+      const u = uidAt(l.controller, l.location, l.sequence);
+      if (u && cardOf[u] === l.code) return u;
+      const [own, other] = l.controller === 1 ? [theirs, mine] : [mine, theirs];
+      return find(own, l.code) || find(other, l.code);
+    };
     for (const pl of plays) {
-      const u = find(mine, pl.code) || find(theirs, pl.code);
+      const u = locate(pl);
       if (!u) continue;
       const o2 = opt[board(u)];
       if (pl.kind === 'activate') { o2.lit = u; o2.activate = true; continue; }
@@ -566,13 +635,14 @@ export function start(o) {
     plays.length = 0;
     // (the chain open: a Chain Link badge on each card in it, its list on your board)
     if (chain.length) {
-      const links = chain.map(l => ({ n: l.n, uid: find(mine, l.code) || find(theirs, l.code), name: nm(l.code), opp: l.controller === 1 }));
+      const links = chain.map(l => ({ n: l.n, uid: locate(l), name: nm(l.code), opp: l.controller === 1 }));
       opt[0].chain = links; opt[1].chain = links; opt[1].chainNoList = true;
       opt[0].chainMin = opt[1].chainMin = 1;
     }
     o.boards.mine.render(mine, opt[0]);
     o.boards.theirs.render(theirs, opt[1]);
     markEmz(mine);
+    for (const k of targeted) { const u = at[k]; for (const b of [o.boards.mine, o.boards.theirs]) if (u && b.cardEl[u]) b.cardEl[u].classList.add('rd-tgt'); }
     if (o.onUpdate) o.onUpdate(mine, theirs);           // (the boards as they are now: a page's own counts and plates)
     fx.lp = [0, 0];
     if (d.practiceOver) { over = true; o.ui.prompt(null); o.onPractice && o.onPractice(field); return; }
