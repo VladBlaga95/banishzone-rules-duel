@@ -173,7 +173,10 @@ export function start(o) {
       // (piles: the top card first)
       P.grave.slice().reverse().forEach((c, j) => put('gy', LOC.GRAVE, P.grave.length - 1 - j, c && { ...c, pos: 1 }));
       P.removed.slice().reverse().forEach((c, j) => put('banished', LOC.REMOVED, P.removed.length - 1 - j, c));
-      P.extra.forEach((c, i) => put('extra', LOC.EXTRA, i, c));
+      // (the Extra Deck: its face-up cards — a Pendulum Monster sent there — on top, shown face up and counted on the pile)
+      const up = c => !!c && (c.pos & 0x5) !== 0;
+      [...P.extra.map((c, i) => [c, i]).filter(([c]) => up(c)), ...P.extra.map((c, i) => [c, i]).filter(([c]) => !up(c))]
+        .forEach(([c, i]) => { put('extra', LOC.EXTRA, i, c); if (up(c)) { const u = s.zones.extra[s.zones.extra.length - 1]; s.flags[u].faceUpExtra = true; } });
       for (let i = 0; i < P.deck; i++) { const u = `deck${p}_${i}`; s.cards[u] = { id: '', name: '', img: '' }; s.flags[u] = { face: 'down', pos: 'atk' }; s.zones.deck.push(u); }
       return s;
     });
@@ -208,6 +211,7 @@ export function start(o) {
 
   // ── what happened, in words ──────────────────────────────────────────────────────────────
   const fx = { lit: null, lp: [0, 0] };
+  let curPhase = '', askedIn = '';          // the phase now (turn:phase), and the one a card of yours on the field was last offered in
   let chain = [], lastActor = -1;          // the chain open (links: {n, code, controller, location, sequence}); who last made a move
   let targeted = [];                        // the cards the chain's effects target ("p:loc:seq"), marked till it's over
   const plays = [];                         // this update's plays, for the board: {kind, code, controller, location, sequence}
@@ -281,7 +285,7 @@ export function start(o) {
     switch (m.type) {
       case 40: turnPlayer = m.player; lastActor = -1; o.ui.log(`<div class="t">Turn ${m.turnNo || ''} — ${esc(who(m.player))}</div>`);
         o.ui.banner && o.ui.banner(m.player === 0 ? 'Your turn' : 'The bot’s turn', m.player); break;
-      case 41: o.ui.phase({ player: turnPlayer, who: who(turnPlayer), phase: m.phase, name: PHASES[m.phase] || '', turn: turns }); break;
+      case 41: curPhase = `${turns}:${m.phase}`; o.ui.phase({ player: turnPlayer, who: who(turnPlayer), phase: m.phase, name: PHASES[m.phase] || '', turn: turns }); break;
       case 60: o.ui.log(`${by(m.controller)} Normal Summoned ${esc(nm(m.code))}`); plays.push({ kind: 'normal', ...m }); break;
       case 62: o.ui.log(`${by(m.controller)} Special Summoned ${esc(nm(m.code))}`); plays.push({ kind: 'special', ...m }); break;
       case 64: o.ui.log(`${by(m.controller)} Flip Summoned ${esc(nm(m.code))}`); break;
@@ -372,7 +376,13 @@ export function start(o) {
       for (const d of b.el.querySelectorAll('.card')) d.classList.toggle('rd-can', uids.includes(d.dataset.uid));
       for (const z of PILE_ZONES) {
         const el = b.el.querySelector(`[data-zone="${z}"]`);
-        if (el) el.classList.toggle('rd-can-pile', !!last[k] && (last[k].zones[z] || []).some(u => uids.includes(u)));
+        if (!el) continue;
+        const lit = !!last[k] && (last[k].zones[z] || []).some(u => uids.includes(u));
+        el.classList.toggle('rd-can-pile', lit);
+        // (your Extra Deck with a summon in it: a tag on it saying so)
+        let tag = el.querySelector(':scope > .rd-pile-tag');
+        if (lit && z === 'extra' && k === 'mine') { if (!tag) { tag = document.createElement('i'); tag.className = 'rd-pile-tag'; tag.textContent = 'Summon'; el.appendChild(tag); } }
+        else if (tag) tag.remove();
       }
     }
   }
@@ -405,7 +415,11 @@ export function start(o) {
         break;
       case 16: {
         const mode = (o.chainMode && o.chainMode()) || 'auto';
-        if (!m.forced && (mode === 'never' || (mode === 'auto' && lastActor !== 1 && !m.spe_count))) { reply({ type: 8, index: null }); return; }
+        // (Auto: asked when they've just moved or a trigger of yours can — and, in each phase of their turn, once
+        //  when a card of yours on the field can be used: a Set Infinite Impermanence in their Standby Phase)
+        const fieldCard = turnPlayer === 1 && askedIn !== curPhase && m.selects.some(c => c.location & (LOC.MZONE | LOC.SZONE));
+        if (!m.forced && (mode === 'never' || (mode === 'auto' && lastActor !== 1 && !m.spe_count && !fieldCard))) { reply({ type: 8, index: null }); return; }
+        if (fieldCard) askedIn = curPhase;
         P.mode = 'chain'; P.title = m.forced ? 'You must activate' : 'Respond?';
         P.text = m.forced ? '' : 'You can chain one of these now.';
         P.cards = m.selects.map((c, i) => ({ code: c.code, label: nm(c.code), sub: effectText(c.description), r: { type: 8, index: i } }));
@@ -429,7 +443,7 @@ export function start(o) {
         m.options.forEach((d, i) => P.buttons.push({ label: desc(d), r: { type: 4, index: i } }));
         break;
       }
-      case 19: P.title = `${nm(m.code)}: which position?`; P.cards = [{ code: m.code, label: nm(m.code) }];
+      case 19: P.title = `${nm(m.code)}: which position?`; P.cards = [{ code: m.code, label: nm(m.code) }]; P.positions = true;   // (shown as the card in each position — rules-ui.js)
         [[1, 'Attack'], [4, 'Defense'], [8, 'Set (face-down Defense)'], [2, 'Face-down Attack']].forEach(([v, t]) => { if (m.positions & v) P.buttons.push({ label: t, r: { type: 11, position: v } }); });
         break;
       case 15: case 20: return pick(m, m.type === 20);
