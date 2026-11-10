@@ -126,6 +126,14 @@ export function start(o) {
   // (EDOPro's own texts, by number: what a choice says when a script names one — 573 "Add the card(s) to your hand")
   fetch((o.scripts || '/duel-scripts/') + 'system.json').then(r => r.json()).then(t => { sys = t; }).catch(() => {});
   let field = null, ask = null, over = false, winner = -1, uidN = 0, turnPlayer = 0, turns = 0;
+  // (each side's foils and frames on its cards — o.me.looks / o.bot.looks: {foils, frames} by "card:<id>", as the
+  //  owner's deck brought them — so the other player sees them too)
+  const look = (p, code) => {
+    const l = (p === 0 ? o.me.looks : o.bot.looks) || {}, k = 'card:' + code, out = {};
+    if (l.foils && l.foils[k]) out.foil = l.foils[k];
+    if (l.frames && l.frames[k]) out.alt = l.frames[k];
+    return out;
+  };
   // where each card is: "p:loc:seq" → uid (so a card glides from where it was to where it is)
   let at = {};
   const cardOf = {};            // uid → code
@@ -160,7 +168,7 @@ export function start(o) {
         s.cards[u] = i.token
           ? { id: '', name: i.name, token: true, frame: 'token', type: 'Token Monster', img: '', big: '', art: i.art, atk: i.atk, def: i.def, level: i.level, race: i.race, attribute: i.attribute }
           : { id: c.code, name: nm(c.code), img: img(c.code), big: big(c.code), frame: i.frame || '', type: i.type || '',
-              extra: !!(c.type & EXTRA_TYPES), ...(c.type & T.MONSTER ? { atk: own ? own[0] : c.atk, def: own ? own[1] : c.def } : {}) };
+              extra: !!(c.type & EXTRA_TYPES), ...(c.type & T.MONSTER ? { atk: own ? own[0] : c.atk, def: own ? own[1] : c.def } : {}), ...look(p, c.code) };
         const down = (c.pos & 0xa) !== 0, def = loc === LOC.MZONE && (c.pos & 0xc) !== 0;
         s.flags[u] = { face: down || (loc === LOC.EXTRA && !(c.pos & 0x5)) ? 'down' : 'up', pos: def ? 'def' : 'atk' };
         // (a face-up monster's ATK / DEF as the engine has it now, when it isn't the card's own: shown changed)
@@ -211,7 +219,7 @@ export function start(o) {
 
   // ── what happened, in words ──────────────────────────────────────────────────────────────
   const fx = { lit: null, lp: [0, 0] };
-  let curPhase = '', askedIn = '';          // the phase now (turn:phase), and the one a card of yours on the field was last offered in
+  let curPhase = '', askedIn = '', afterExtra = false;          // the phase now (turn:phase), and the one a card of yours on the field was last offered in
   let chain = [], lastActor = -1;          // the chain open (links: {n, code, controller, location, sequence}); who last made a move
   let targeted = [];                        // the cards the chain's effects target ("p:loc:seq"), marked till it's over
   const plays = [];                         // this update's plays, for the board: {kind, code, controller, location, sequence}
@@ -281,6 +289,9 @@ export function start(o) {
     hear(m);
     if (m.type === 2 && m.hint_type === 3 && m.player === 0) selHint = m.hint;
     if ([60, 62, 64, 70].includes(m.type)) lastActor = m.controller;
+    // (your own Link / Fusion / Synchro / Xyz Summon: the window after it offered — Ars Magna's kind answers either's)
+    if (m.type === 62 && m.controller === 0 && ((cards[m.code] || [])[2] & EXTRA_TYPES)) afterExtra = true;
+    if (m.type === 41) afterExtra = false;
     if (m.type === 110) lastActor = m.card.controller;
     switch (m.type) {
       case 40: turnPlayer = m.player; lastActor = -1; o.ui.log(`<div class="t">Turn ${m.turnNo || ''} — ${esc(who(m.player))}</div>`);
@@ -294,8 +305,8 @@ export function start(o) {
         o.ui.log(`${by(m.controller)} activated ${esc(nm(m.code))}${m.chain_size > 1 ? ` (Chain Link ${m.chain_size})` : ''}`);
         chain.push({ n: m.chain_size || chain.length + 1, code: m.code, controller: m.controller, location: m.location, sequence: m.sequence });
         plays.push({ kind: 'activate', ...m });
-        // (the bot's activation: its card big for a moment, so you see what it played)
-        if (m.controller === 1 && o.ui.flash) o.ui.flash({ code: m.code, name: nm(m.code), big: big(m.code), link: chain.length });
+        // (the other side's activation: its card big for a moment with the effect it used, so you see what it played)
+        if (m.controller === 1 && o.ui.flash) o.ui.flash({ code: m.code, name: nm(m.code), big: big(m.code), link: chain.length, text: effectText(m.description) || '' });
         break;
       case 31: {   // cards shown to you (CONFIRM_CARDS) — the other player's: shown big, each named in the log
         const theirs = (m.cards || []).filter(c => c.controller !== m.player && c.code);
@@ -417,8 +428,11 @@ export function start(o) {
         const mode = (o.chainMode && o.chainMode()) || 'auto';
         // (Auto: asked when they've just moved or a trigger of yours can — and, in each phase of their turn, once
         //  when a card of yours on the field can be used: a Set Infinite Impermanence in their Standby Phase)
+        // (and the window right after your own summon from the Extra Deck — once)
         const fieldCard = turnPlayer === 1 && askedIn !== curPhase && m.selects.some(c => c.location & (LOC.MZONE | LOC.SZONE));
-        if (!m.forced && (mode === 'never' || (mode === 'auto' && lastActor !== 1 && !m.spe_count && !fieldCard))) { reply({ type: 8, index: null }); return; }
+        const extraWin = afterExtra;
+        afterExtra = false;
+        if (!m.forced && (mode === 'never' || (mode === 'auto' && lastActor !== 1 && !m.spe_count && !fieldCard && !extraWin))) { reply({ type: 8, index: null }); return; }
         if (fieldCard) askedIn = curPhase;
         P.mode = 'chain'; P.title = m.forced ? 'You must activate' : 'Respond?';
         P.text = m.forced ? '' : 'You can chain one of these now.';
