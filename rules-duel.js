@@ -157,7 +157,8 @@ export function start(o) {
       const u = 'r' + (++uidN); cardOf[u] = code; return u;
     };
     const states = [0, 1].map(p => {
-      const P = f[p], s = { cards: {}, zones: {}, flags: {}, lp: P.lp };
+      // (the engine's LP read as unsigned: below 0 it came as 4294966296 — shown 0)
+      const P = f[p], lp = P.lp >= 2 ** 31 ? 0 : P.lp, s = { cards: {}, zones: {}, flags: {}, lp: Math.max(0, lp) };
       for (const z of ['deck', 'hand', 'gy', 'banished', 'extra', 'mm1', 'mm2', 'mm3', 'mm4', 'mm5', 'emz1', 'emz2', 'st1', 'st2', 'st3', 'st4', 'st5', 'fz']) s.zones[z] = [];
       const put = (zone, loc, seq, c) => {
         if (!c) return;
@@ -712,8 +713,14 @@ export function start(o) {
       opt[0].chain = links; opt[1].chain = links; opt[1].chainNoList = true;
       opt[0].chainMin = opt[1].chainMin = 1;
     }
-    o.boards.mine.render(mine, opt[0]);
-    o.boards.theirs.render(theirs, opt[1]);
+    // (a board drawn again only when it changed — its cards or what's shown on it: an update often moves one side
+    //  alone, and a board's every card is made again each time it's drawn)
+    for (const [b, st, op] of [[o.boards.mine, mine, opt[0]], [o.boards.theirs, theirs, opt[1]]]) {
+      const key = JSON.stringify([st, op]);
+      if (key === b._rdKey) { for (const d of b.el.querySelectorAll('.rd-tgt')) d.classList.remove('rd-tgt'); continue; }
+      b._rdKey = key;
+      b.render(st, op);
+    }
     markEmz(mine);
     for (const k of targeted) { const u = at[k]; for (const b of [o.boards.mine, o.boards.theirs]) if (u && b.cardEl[u]) b.cardEl[u].classList.add('rd-tgt'); }
     if (o.onUpdate) o.onUpdate(mine, theirs);           // (the boards as they are now: a page's own counts and plates)

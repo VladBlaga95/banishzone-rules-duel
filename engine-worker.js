@@ -29,7 +29,10 @@ let lib, handle, cards = {}, base = '', bots = [false, false], ctx, lastAsk = nu
 // the bot's plays one at a time: while it acts (from its answer to your next one), the engine is stepped and the
 // page told after each step that shows something, a moment apart — how long, by what happened; speed: the page's
 let botActive = false, speed = 1;
-const STEP_MS = { 70: 1000, 60: 850, 62: 850, 64: 850, 110: 800, 91: 650, 92: 650, 100: 550, 54: 550, 53: 450, 50: 420, 90: 300, 73: 280 };
+// (Normal: long enough to follow each play, its effect included — the board's animations take about 0.4–0.6 s;
+//  Slow (×1.7) about the old pace, Fast ×0.4)
+const STEP_MS = { 70: 620, 60: 540, 62: 540, 64: 540, 110: 500, 91: 420, 92: 420, 100: 360, 54: 360, 53: 300, 50: 280, 90: 200, 73: 180 };
+const BEAT_MS = 220;
 const answers = [];
 // the duel as it began (its seed, the Decks in their shuffled order), to make copies of it: the bot's trials
 let spec = null, choose = null, practiceOver = false;
@@ -108,14 +111,18 @@ function run() {
     if (bots[ask.player]) {
       // (on its own turn, Normal and Hard look ahead: each move tried in a copy of the duel — lookahead.js)
       let r = null;
+      const thinkFrom = performance.now();
       if (choose && ctx.level !== 'easy' && ctx.turnPlayer === ask.player) {
         try { r = choose[ask.player](ask, answers, ctx, ctx.level === 'hard' ? 14 : 8); } catch (err) { r = null; }
       }
       if (!r) r = decide(ask, ctx);
       answer(r);
       botActive = true;
-      // (a beat before each of its main and battle moves: what follows is stepped play by play)
-      if (ask.type === 11 || ask.type === 10 || ask.type === 16 && ask.selects.length) { post(msgs, null); setTimeout(run, 380 * speed); return; }
+      // (a beat before each of its main and battle moves: what follows is stepped play by play — the time it spent
+      //  thinking counted in it, not added to it)
+      if (ask.type === 11 || ask.type === 10 || ask.type === 16 && ask.selects.length) {
+        post(msgs, null); setTimeout(run, Math.max(0, BEAT_MS * speed - (performance.now() - thinkFrom))); return;
+      }
       continue;
     }
     post(msgs, ask);
