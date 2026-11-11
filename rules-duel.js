@@ -10,9 +10,10 @@
 const T = { MONSTER: 0x1, SPELL: 0x2, TRAP: 0x4, NORMAL: 0x10, TOKEN: 0x4000, LINK: 0x4000000 };
 const LOC = { DECK: 1, HAND: 2, MZONE: 4, SZONE: 8, GRAVE: 16, REMOVED: 32, EXTRA: 64 };
 const EXTRA_TYPES = 0x40 | 0x2000 | 0x800000 | 0x4000000;     // Fusion, Synchro, Xyz, Link
+// (Spell & Trap Zones 6 and 7: Master Rule 3's own Pendulum Zones — pz1, pz2 on the board, when it has them)
 const ZONE = {
   [LOC.MZONE]: s => ['mm1', 'mm2', 'mm3', 'mm4', 'mm5', 'emz1', 'emz2'][s],
-  [LOC.SZONE]: s => ['st1', 'st2', 'st3', 'st4', 'st5', 'fz', 'st1', 'st5'][s],
+  [LOC.SZONE]: s => ['st1', 'st2', 'st3', 'st4', 'st5', 'fz', 'pz1', 'pz2'][s],
 };
 const PHASES = { 1: 'Draw Phase', 2: 'Standby Phase', 4: 'Main Phase 1', 8: 'Battle Phase', 0x10: 'Battle Phase', 0x20: 'Battle Phase',
                  0x40: 'Battle Phase', 0x80: 'Battle Phase', 0x100: 'Main Phase 2', 0x200: 'End Phase' };
@@ -116,8 +117,19 @@ export function start(o) {
   // (o.spectator — watching an Auto duel, or its replay: no seat, both players' answers through apply(), o.me the
   //  player at the bottom by name; o.showHands: both hands and Extra Decks shown (a caster, a replay), else hidden)
   const hand = (o.hand || []).filter(code => { const i = mineCodes.main.indexOf(code); if (i < 0) return false; mineCodes.main.splice(i, 1); return true; });
+  // (o.bot.combos — the bot's deck's combos, recorded in the Combo Lab's Auto: [{deck, hand, seed, answers}] — it plays
+  //  their moves on its turn when it can: engine-worker.js reads each as it was played; o.onCombos({read, of, moves})
+  //  says how many it could read)
+  const combos = (o.bot.combos || []).filter(c => c && c.deck && Array.isArray(c.answers) && c.answers.length).map(c => {
+    const k = deckCodes(c.deck, {});
+    const h = (c.hand || []).filter(code => { const i = k.main.indexOf(code); if (i < 0) return false; k.main.splice(i, 1); return true; });
+    return { main: k.main, extra: k.extra, hand: h, seed: c.seed, answers: c.answers };
+  });
   const names = Object.fromEntries(Object.entries(info).map(([k, v]) => [k, v.name]));
   const spec = !!o.spectator, seeAll = !!o.showHands, seeOwn = !spec || seeAll;
+  // (Master Rule 3 — o.rules.rules 'mr3': the Pendulum Zones their own two, drawn on each board; no Extra Monster Zones)
+  const PZ = !!(o.rules && o.rules.rules === 'mr3');
+  for (const b of [o.boards.mine, o.boards.theirs]) if (b.setPendulumZones) b.setPendulumZones(PZ);
   const who = p => p === 0 ? (spec ? o.me.name : 'You') : o.bot.name;
   const nm = code => (info[code] || {}).name || 'a card';
   const img = code => (info[code] || {}).img || `https://images.ygoprodeck.com/images/cards_small/${code}.jpg`;
@@ -163,7 +175,7 @@ export function start(o) {
     const states = [0, 1].map(p => {
       // (the engine's LP read as unsigned: below 0 it came as 4294966296 — shown 0)
       const P = f[p], lp = P.lp >= 2 ** 31 ? 0 : P.lp, s = { cards: {}, zones: {}, flags: {}, lp: Math.max(0, lp) };
-      for (const z of ['deck', 'hand', 'gy', 'banished', 'extra', 'mm1', 'mm2', 'mm3', 'mm4', 'mm5', 'emz1', 'emz2', 'st1', 'st2', 'st3', 'st4', 'st5', 'fz']) s.zones[z] = [];
+      for (const z of ['deck', 'hand', 'gy', 'banished', 'extra', 'mm1', 'mm2', 'mm3', 'mm4', 'mm5', 'emz1', 'emz2', 'st1', 'st2', 'st3', 'st4', 'st5', 'fz', ...(PZ ? ['pz1', 'pz2'] : [])]) s.zones[z] = [];
       const put = (zone, loc, seq, c) => {
         if (!c) return;
         const k = `${p}:${loc}:${seq}`, u = take(k, c.code);
@@ -182,7 +194,7 @@ export function start(o) {
       };
       P.hand.forEach((c, i) => put('hand', LOC.HAND, i, c && { ...c, pos: 1 }));
       P.mzone.forEach((c, i) => put(ZONE[LOC.MZONE](i), LOC.MZONE, i, c));
-      P.szone.forEach((c, i) => { if (i < 6) put(ZONE[LOC.SZONE](i), LOC.SZONE, i, c); });
+      P.szone.forEach((c, i) => { if (i < (PZ ? 8 : 6)) put(ZONE[LOC.SZONE](i), LOC.SZONE, i, c); });
       // (piles: the top card first)
       P.grave.slice().reverse().forEach((c, j) => put('gy', LOC.GRAVE, P.grave.length - 1 - j, c && { ...c, pos: 1 }));
       P.removed.slice().reverse().forEach((c, j) => put('banished', LOC.REMOVED, P.removed.length - 1 - j, c));
@@ -515,7 +527,7 @@ export function start(o) {
         // (field_mask: a bit set is a zone you can't pick; the low 16 bits yours — Monster Zones 0–6, Spell & Trap
         // Zones 8–13 — the high 16 the opponent's)
         const places = [];
-        for (const side of [0, 1]) for (const [loc, base, n] of [[LOC.MZONE, 0, 7], [LOC.SZONE, 8, 6]]) for (let q = 0; q < n; q++) {
+        for (const side of [0, 1]) for (const [loc, base, n] of [[LOC.MZONE, 0, 7], [LOC.SZONE, 8, PZ ? 8 : 6]]) for (let q = 0; q < n; q++) {
           if (!((m.field_mask >>> ((side ? 16 : 0) + base + q)) & 1)) places.push({ player: side ? 1 - m.player : m.player, location: loc, sequence: q });
         }
         const kind = m.type === 18 ? 10 : 9;
@@ -684,6 +696,7 @@ export function start(o) {
     if (d.t === 'error') { o.ui.log(`<span class="err">${esc(d.text.split('\n')[0])}</span>`); console.error(d.text); return; }
     if (d.t === 'log') { console.warn('[engine]', d.text); return; }
     if (d.t === 'replay') { o.onReplay && o.onReplay(d.answers); return; }
+    if (d.t === 'combos') { o.onCombos && o.onCombos(d); return; }
     if (d.t !== 'update') return;
     if (seat) { d.msgs = swapSides(d.msgs); d.ask = swapSides(d.ask); d.field = [d.field[1], d.field[0]]; }
     for (const m of d.msgs) { if (m.type === 40) m.turnNo = ++turns; tell(m); }
@@ -763,6 +776,7 @@ export function start(o) {
   }
   // (o.rules: the duel's options — its rules, LP, opening hand, draws a turn: engine-worker.js)
   worker.postMessage({ t: 'start', decks, board, hand: hand.length ? hand : null, handDraw: o.handDraw || 0, lab: !!o.lab, rules: o.rules || null,
+                       combos: combos.length && !o.online && !o.spectator ? combos : null,
                        bots: o.bots || (o.online || o.spectator ? [false, false] : [false, true]), level: o.level, names, scripts: o.scripts || '/duel-scripts/',
                        speed: o.speed || 'normal', seed: o.seed || Math.floor(Math.random() * 2 ** 31) + 1 });
   return { stop: () => worker.terminate(), replay: () => worker.postMessage({ t: 'replay' }), speed: v => worker.postMessage({ t: 'speed', v }),

@@ -13,13 +13,26 @@ assets/duel-scripts/ (not in git — this fetches it again).
                          (no text: the engine doesn't need it)
   system.json            EDOPro's own texts, by number — what a choice says when a script names one of them
                          ("Add to hand", 573) — {number: text}, from Project Ignis Distribution's config/strings.conf
-  version.json           the versions fetched
+  version.json           the versions fetched, and when
+  last-update.json       what the last --update brought: the new cards, the cards that got their script
 
-Change SCRIPTS_AT / CDB_AT / SYSTEM_AT to update (python … --latest prints the newest commits; --cards remakes
-cards.json only, --system system.json only).
+Updating — new cards and script fixes come out every week or so:
+
+    python assets/duel-engine/tools/fetch_data.py --check     what's new since the versions here: how many commits,
+                                                              new card scripts, changed ones — nothing downloaded
+                                                              but those few lines (exit code 3: there is something)
+    python assets/duel-engine/tools/fetch_data.py --update    this file's SCRIPTS_AT / CDB_AT / SYSTEM_AT moved to the
+                                                              newest commits, everything fetched again, and what
+                                                              came said: the new cards by name, the cards now scripted
+
+Both players of a duel must run the same data (the duel is the same engine on each side): update, then deploy when
+no duel is being played. (--latest prints the newest commits; --cards remakes cards.json only, --system system.json
+only.)
 """
+import datetime
 import io
 import json
+import re
 import sqlite3
 import sys
 import tarfile
@@ -27,8 +40,8 @@ import tempfile
 import urllib.request
 from pathlib import Path
 
-SCRIPTS_AT = "2bd02f71383b87d7dee174909a96d10491930c45"    # ProjectIgnis/CardScripts, 2026-11-03
-CDB_AT = "781ec580fb82ced7cd17bae290ee2985824a0def"        # ProjectIgnis/BabelCDB, 2026-11-03
+SCRIPTS_AT = "d100052a19ddd4478967b215ffbbfb8232bdaacb"    # ProjectIgnis/CardScripts, 2026-11-11
+CDB_AT = "0f17a0ce1e8980374ef577e076e20d11d6057ede"        # ProjectIgnis/BabelCDB, 2026-11-11
 SYSTEM_AT = "54a6e2395c532648ff762540e9615319fac4f51b"     # ProjectIgnis/Distribution, 2026-08-12
 MODULE = Path(__file__).resolve().parents[1]
 # (in BanishZone: assets/duel-scripts/ beside the module; in the module's own repository: duel-scripts/ in it)
@@ -61,6 +74,10 @@ def scripts():
     return n
 
 
+NAMES = {}     # (each card's name, as cards() reads it: to say which cards are new)
+REPOS = (("scripts", "SCRIPTS_AT", "CardScripts"), ("cdb", "CDB_AT", "BabelCDB"), ("system", "SYSTEM_AT", "Distribution"))
+
+
 def cards():
     """cards.json from BabelCDB at CDB_AT (read here, not kept): cards.cdb, then each release-*.cdb — a set
     just released, kept apart until it's merged into cards.cdb (Blazing Eternity's, release-betb.cdb, in
@@ -81,8 +98,9 @@ def cards():
                 out[cid] = [alias, [(setcode >> (16 * i)) & 0xffff for i in range(4) if (setcode >> (16 * i)) & 0xffff],
                             typ, level & 0xff, attr, race, atk, 0 if link else df, (level >> 24) & 0xff, (level >> 16) & 0xff, df if link else 0, scripted]
             # each card's effect texts (str1…str16): what an effect's button says ("Special Summon this card"…)
-            for row in db.execute("select id, " + ", ".join(f"str{i}" for i in range(1, 17)) + " from texts"):
-                t = [x or "" for x in row[1:]]
+            for row in db.execute("select id, name, " + ", ".join(f"str{i}" for i in range(1, 17)) + " from texts"):
+                NAMES[row[0]] = row[1] or ""
+                t = [x or "" for x in row[2:]]
                 while t and not t[-1]:
                     t.pop()
                 if t:
@@ -108,14 +126,114 @@ def system():
     return len(out)
 
 
+def pins():
+    return {"scripts": SCRIPTS_AT, "cdb": CDB_AT, "system": SYSTEM_AT}
+
+
+def latest():
+    """Each repository's newest commit: {scripts | cdb | system: (sha, its date)}."""
+    out = {}
+    for key, _, repo in REPOS:
+        d = json.loads(get(f"https://api.github.com/repos/ProjectIgnis/{repo}/commits/master"))
+        out[key] = (d["sha"], d["commit"]["committer"]["date"][:10])
+    return out
+
+
+def check(new=None):
+    """What's new since the versions pinned here, a line per repository — True if anything is. Reads GitHub's
+    comparison of the two commits (its file list stops at 300: said when it does); downloads no scripts."""
+    new, now, any_new = new or latest(), pins(), False
+    for key, _, repo in REPOS:
+        sha, date = new[key]
+        if sha == now[key]:
+            print(f"{repo}: up to date")
+            continue
+        any_new = True
+        c = json.loads(get(f"https://api.github.com/repos/ProjectIgnis/{repo}/compare/{now[key]}...{sha}"))
+        files = c.get("files") or []
+        line = f"{repo}: {c.get('ahead_by', '?')} commit(s) newer, the last on {date}"
+        if key == "scripts":
+            official = [f for f in files if re.fullmatch(r"official/c\d+\.lua", f.get("filename", ""))]
+            added = sum(1 for f in official if f.get("status") == "added")
+            line += f" — {added} new card script(s), {len(official) - added} changed"
+        elif key == "cdb":
+            dbs = sorted({f.get("filename", "") for f in files if f.get("filename", "").endswith(".cdb")})
+            line += " — " + (", ".join(dbs) if dbs else "no card database changed")
+        if len(files) >= 300:
+            line += " (or more: GitHub lists the first 300 files)"
+        print(line)
+    return any_new
+
+
+def repin(new):
+    """This file's SCRIPTS_AT / CDB_AT / SYSTEM_AT moved to `new` ({key: (sha, date)}), and the values in use here;
+    the module's README.md names the same commits: changed there too."""
+    path, readme, was = Path(__file__), MODULE / "README.md", pins()
+    if readme.is_file():
+        text = readme.read_bytes()
+        for key, _, _ in REPOS:
+            text = text.replace(was[key].encode(), new[key][0].encode())
+        readme.write_bytes(text)
+    src = path.read_bytes().decode("utf-8")
+    for key, name, repo in REPOS:
+        sha, date = new[key]
+        src, n = re.subn(rf'(?m)^{name} = "[0-9a-f]{{40}}"[ \t]*#[^\r\n]*',
+                         (f'{name} = "{sha}"').ljust(59) + f"# ProjectIgnis/{repo}, {date}", src)
+        if n != 1:
+            raise SystemExit(f"{name} not found in {path.name}: nothing changed")
+        globals()[name] = sha
+    path.write_bytes(src.encode("utf-8"))
+
+
+def update():
+    """--update: the newest versions pinned and fetched; what came, said and kept in last-update.json."""
+    new = latest()
+    if not check(new):
+        print("Nothing new: the data is as it was.")
+        return
+    old_pins = pins()
+    try:
+        before = json.loads((OUT / "cards.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        before = {}
+    repin(new)
+    OUT.mkdir(parents=True, exist_ok=True)
+    print("Fetching the card scripts…")
+    n = scripts()
+    print("Reading the card database…")
+    c = cards()
+    print("Reading EDOPro's own texts…")
+    t = system()
+    today = datetime.date.today().isoformat()
+    (OUT / "version.json").write_text(json.dumps({**pins(), "date": today}), encoding="utf-8")
+    after = json.loads((OUT / "cards.json").read_text(encoding="utf-8"))
+    name = lambda k: NAMES.get(int(k)) or f"#{k}"
+    # (an alternate artwork — it has an alias — isn't a new card)
+    fresh = sorted((name(k) for k in after if k not in before and not after[k][0]), key=str.lower)
+    scripted = sorted((name(k) for k in after if k in before and after[k][11] and not before[k][11] and not after[k][0]), key=str.lower)
+    (OUT / "last-update.json").write_text(json.dumps({"date": today, "from": old_pins, "to": pins(), "new": fresh, "scripted": scripted},
+                                                     ensure_ascii=False), encoding="utf-8")
+    print(f"{OUT}: {n} scripts, {c} cards, {t} system texts")
+    for label, names in (("new card(s)", fresh), ("card(s) now scripted", scripted)):
+        if before and names:
+            print(f"{len(names)} {label}: " + ", ".join(names[:40]) + (f" and {len(names) - 40} more" if len(names) > 40 else ""))
+    print("Next: python tools/export_engine_source.py (the pins are part of the public source), then deploy — when no duel is being played.")
+
+
 def main():
+    if hasattr(sys.stdout, "reconfigure"):          # (a Windows console: the names and dashes as they are)
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     if "--latest" in sys.argv:
-        for repo in ("CardScripts", "BabelCDB", "Distribution"):
-            d = json.loads(get(f"https://api.github.com/repos/ProjectIgnis/{repo}/commits/master"))
-            print(repo, d["sha"], d["commit"]["committer"]["date"])
+        for key, (sha, date) in latest().items():
+            print(key, sha, date)
+        return
+    if "--check" in sys.argv:
+        sys.exit(3 if check() else 0)
+    if "--update" in sys.argv:
+        update()
         return
     OUT.mkdir(parents=True, exist_ok=True)
-    versions = {"scripts": SCRIPTS_AT, "cdb": CDB_AT, "system": SYSTEM_AT}
+    versions = {**pins(), "date": datetime.date.today().isoformat()}
     if "--system" in sys.argv:                    # (--system: EDOPro's own texts again, the rest as it is)
         print(f"{OUT}: {system()} system texts")
         (OUT / "version.json").write_text(json.dumps(versions), encoding="utf-8")

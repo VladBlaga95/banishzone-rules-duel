@@ -11,10 +11,10 @@ version 3 or later** (see `LICENSE.md`), because it is built on two AGPL project
   `vendor/ocgcore-wasm/LICENSE.md`): <https://github.com/n1xx1/ocgcore-wasm>. It is unmodified; its
   corresponding source is the ygopro-core version that ocgcore-wasm 0.1.6 builds from.
 - **Project Ignis' card scripts**, one Lua script per card: <https://github.com/ProjectIgnis/CardScripts>,
-  at commit `2bd02f71383b87d7dee174909a96d10491930c45`. They are unmodified.
+  at commit `d100052a19ddd4478967b215ffbbfb8232bdaacb`. They are unmodified.
 
 Card statistics (type, Level, ATK/DEF, archetypes) come from Project Ignis' card database,
-<https://github.com/ProjectIgnis/BabelCDB>, at commit `781ec580fb82ced7cd17bae290ee2985824a0def`.
+<https://github.com/ProjectIgnis/BabelCDB>, at commit `0f17a0ce1e8980374ef577e076e20d11d6057ede`.
 EDOPro's own texts (what a card's choice says when its script names one by number, "Add the card(s) to your hand")
 come from Project Ignis' Distribution, <https://github.com/ProjectIgnis/Distribution> (AGPL-3.0), its
 `config/strings.conf` at commit `54a6e2395c532648ff762540e9615319fac4f51b`.
@@ -24,12 +24,12 @@ Yu-Gi-Oh! is a trademark of Shueisha and Konami. This project is not affiliated 
 
 | File | What it does |
 | --- | --- |
-| `engine-worker.js` | Runs the engine in a Web Worker: loads the cards and scripts, runs the duel, and answers the bot's prompts |
+| `engine-worker.js` | Runs the engine in a Web Worker: loads the cards and scripts, runs the duel, and answers the bot's prompts; reads the combos recorded with the bot's deck, which the bot then plays when it can |
 | `bot.js` | The bot: it picks one of the moves the engine allows |
 | `rules-duel.js` | The page side: turns the engine's field into the duel board's drawing, and your taps into the engine's answers |
 | `lookahead.js` | The bot's look-ahead: tries a move on a copy of the duel to see where it leads |
 | `vendor/ocgcore-wasm/` | The engine (ocgcore-wasm 0.1.6: `dist/` and `lib/ocgcore.sync.wasm`, unmodified) |
-| `tools/fetch_data.py` | Fetches the card scripts and builds `cards.json`, `strings.json` and `system.json` at the versions above (into `assets/duel-scripts/`) |
+| `tools/fetch_data.py` | Fetches the card scripts and builds `cards.json`, `strings.json` and `system.json` at the versions above (into `assets/duel-scripts/`); `--check` says what is newer upstream, `--update` moves to it (the commits here and in the tool change together) |
 
 The rest of BanishZone is not part of this program. That includes the duel board that draws the field
 (it receives plain data from `rules-duel.js`), the deck builder, accounts and the server. They talk to the
