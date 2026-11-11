@@ -1,16 +1,23 @@
 // BanishZone Rules Duel — the bot looking ahead.
 // Copyright (C) 2026 BanishZone. Licensed under the GNU Affero General Public License v3 or later (see LICENSE.md).
 //
-// The engine is deterministic and fast (a whole duel in about a tenth of a second), so before a choice that matters
-// on its own turn, the bot tries each move it's allowed in a copy of the duel — the same seed and every answer
-// given so far, then that move — plays the rest of its turn out with its plain rules (bot.js), and keeps the move
-// that leaves it best placed (score()). Fair play: in those copies its opponent never responds (it doesn't use
-// what's in your hand), and it looks no further than its own turn (not at either player's next draws).
+// The engine is deterministic and fast, so before a choice that matters on its own turn, the bot tries each move
+// it's allowed, plays the rest of its turn out with its plain rules (bot.js), and keeps the move that leaves it
+// best placed (score()). Fair play: in those trials its opponent never responds (it doesn't use what's in your
+// hand), and it looks no further than its own turn (not at either player's next draws).
 //
-//   const choose = lookahead({ lib, makeDuel, decide, seat });
+// A trial is played on the duel itself, then taken back: the engine's whole state is its WebAssembly memory, so
+// that memory is copied once before the trials and put back after each (`live`) — a few milliseconds a move,
+// however long the duel has been. Without `live` (an engine whose memory can't be reached), each trial is a copy
+// of the duel made from its start — the same seed and every answer given so far — which costs a new duel and
+// the whole duel played again, a move.
+//
+//   const choose = lookahead({ lib, makeDuel, decide, seat, fix, live });
 //   choose(ask, answers, ctx) → the answer to give, or null (nothing worth looking ahead for: use decide)
 //     makeDuel() → a fresh duel, started, as the real one was (seed, Decks); answers: every answer given so far;
 //     ctx: the bot's context (turn, phase, level…) — a copy is used in the trials, its handle the trial's
+//     fix(r) → an answer as the engine takes it; live: { handle() the duel, heap() the engine's memory (a
+//     Uint8Array — asked for each time: it's another once it has grown), quiet(on) no errors reported meanwhile }
 const Q = 0x1 | 0x2 | 0x100 | 0x200;
 const LOC = { HAND: 2, MZONE: 4, SZONE: 8, GRAVE: 16, REMOVED: 32 };
 const ASK = new Set([10, 11, 12, 13, 14, 15, 16, 18, 19, 20, 21, 22, 23, 24, 25, 26, 132, 140, 141, 142, 143]);
@@ -84,39 +91,44 @@ function score(lib, h, seat) {
   return value(seat) - value(1 - seat);
 }
 
-export function lookahead({ lib, makeDuel, decide, seat }) {
-  // a trial: the duel replayed to now, `r` given, the rest of the turn played out; its score
-  function trial(answers, r, ctx) {
+const BUDGET_MS = 600;         // (a choice's trials stop here — the best of those tried: a slow phone still plays on)
+
+export function lookahead({ lib, makeDuel, decide, seat, fix = r => r, live = null }) {
+  // the duel `d`, waiting at the prompt: `r` given, the rest of the turn played out; its score
+  function playout(d, r, ctx) {
+    lib.duelSetResponse(d, fix(r));
+    const c = { ...ctx, lib, handle: d, acts: {}, trigger: {} };
+    for (let n = 0; n < 2500; n++) {
+      const st = lib.duelProcess(d);
+      let ask = null;
+      for (const m of lib.duelGetMessage(d)) {
+        if (m.type === 5) return m.player === seat ? 1e4 : -1e4;      // (a win, a loss)
+        if (m.type === 40) return score(lib, d, seat);                 // (its turn over: as it stands)
+        if (m.type === 41) c.phase = m.phase === 0x100 ? 'main2' : String(m.phase);
+        if (m.type === 70) c.trigger = { by: m.controller, kind: 'chain' };
+        if (ASK.has(m.type)) ask = m;
+      }
+      if (st === END) break;
+      if (st === CONTINUE || !ask) continue;
+      lib.duelSetResponse(d, fix(ask.player === seat ? decide(ask, c) : passive(ask, decide, c)));
+    }
+    return score(lib, d, seat);
+  }
+  // a trial in a copy of the duel: made as the real one was, replayed to now, then played out
+  function replayed(answers, r, ctx) {
     const d = makeDuel();
     try {
       let i = 0, st;
-      // (replayed: each answer given at its prompt, as it was)
+      // (replayed: each answer given at its prompt, as it was — what it says in between isn't read)
       while (i < answers.length) {
         st = lib.duelProcess(d);
-        lib.duelGetMessage(d);
         if (st === END) return -1e4;
-        if (st === WAITING) lib.duelSetResponse(d, answers[i++]);
+        if (st === WAITING) lib.duelSetResponse(d, fix(answers[i++]));
       }
       // (on to the same prompt — the engine may take a few steps to get there: then this move)
       do { st = lib.duelProcess(d); lib.duelGetMessage(d); } while (st === CONTINUE);
       if (st !== WAITING) return score(lib, d, seat);
-      lib.duelSetResponse(d, r);
-      const c = { ...ctx, lib, handle: d, acts: {}, trigger: {} };
-      for (let n = 0; n < 2500; n++) {
-        st = lib.duelProcess(d);
-        let ask = null;
-        for (const m of lib.duelGetMessage(d)) {
-          if (m.type === 5) return m.player === seat ? 1e4 : -1e4;      // (a win, a loss)
-          if (m.type === 40) return score(lib, d, seat);                 // (its turn over: as it stands)
-          if (m.type === 41) c.phase = m.phase === 0x100 ? 'main2' : String(m.phase);
-          if (m.type === 70) c.trigger = { by: m.controller, kind: 'chain' };
-          if (ASK.has(m.type)) ask = m;
-        }
-        if (st === END) break;
-        if (st === CONTINUE || !ask) continue;
-        lib.duelSetResponse(d, ask.player === seat ? decide(ask, c) : passive(ask, decide, c));
-      }
-      return score(lib, d, seat);
+      return playout(d, r, ctx);
     } catch {
       return -1e5;
     } finally {
@@ -129,13 +141,27 @@ export function lookahead({ lib, makeDuel, decide, seat }) {
     if (!cands) return null;
     cands = cands.slice(0, max);
     let best = null, bestScore = -Infinity;
-    const scores = [];
-    for (const r of cands) {
-      const sc = trial(answers, r, ctx);
-      scores.push(sc);
-      if (sc > bestScore + 1e-6) { best = r; bestScore = sc; }
+    const scores = [], from = performance.now();
+    const keep = sc => { scores.push(sc); if (sc > bestScore + 1e-6) { best = cands[scores.length - 1]; bestScore = sc; } };
+    const heap = live && live.heap && live.heap();
+    if (heap) {
+      // (on the duel itself: its engine's memory as it is now, put back after each trial — and what a trial grew
+      //  it by, cleared, as new memory is)
+      const snap = heap.slice();
+      const back = () => { const h = live.heap(); h.set(snap); if (h.length > snap.length) h.fill(0, snap.length); };
+      live.quiet && live.quiet(true);
+      try {
+        for (const r of cands) {
+          let sc;
+          try { sc = playout(live.handle(), r, ctx); } catch { sc = -1e5; } finally { back(); }
+          keep(sc);
+          if (performance.now() - from > BUDGET_MS) break;
+        }
+      } finally { live.quiet && live.quiet(false); }
+    } else {
+      for (const r of cands) { keep(replayed(answers, r, ctx)); if (performance.now() - from > BUDGET_MS) break; }
     }
-    if (choose.onScores) choose.onScores(ask, cands, scores);
+    if (choose.onScores) choose.onScores(ask, cands.slice(0, scores.length), scores);
     return best;
   };
 }

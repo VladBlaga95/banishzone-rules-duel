@@ -27,9 +27,9 @@ Yu-Gi-Oh! is a trademark of Shueisha and Konami. This project is not affiliated 
 | `engine-worker.js` | Runs the engine in a Web Worker: loads the cards and scripts, runs the duel, and answers the bot's prompts; reads the combos recorded with the bot's deck, which the bot then plays when it can |
 | `bot.js` | The bot: it picks one of the moves the engine allows |
 | `rules-duel.js` | The page side: turns the engine's field into the duel board's drawing, and your taps into the engine's answers |
-| `lookahead.js` | The bot's look-ahead: tries a move on a copy of the duel to see where it leads |
+| `lookahead.js` | The bot's look-ahead: tries a move on the duel to see where it leads, then puts the engine's memory back as it was |
 | `vendor/ocgcore-wasm/` | The engine (ocgcore-wasm 0.1.6: `dist/` and `lib/ocgcore.sync.wasm`, unmodified) |
-| `tools/fetch_data.py` | Fetches the card scripts and builds `cards.json`, `strings.json` and `system.json` at the versions above (into `assets/duel-scripts/`); `--check` says what is newer upstream, `--update` moves to it (the commits here and in the tool change together) |
+| `tools/fetch_data.py` | Fetches the card scripts and builds `cards.json`, `strings.json`, `system.json` and `shared.json` (the shared rule files as one) at the versions above (into `assets/duel-scripts/`); `--check` says what is newer upstream, `--update` moves to it (the commits here and in the tool change together) |
 
 The rest of BanishZone is not part of this program. That includes the duel board that draws the field
 (it receives plain data from `rules-duel.js`), the deck builder, accounts and the server. They talk to the

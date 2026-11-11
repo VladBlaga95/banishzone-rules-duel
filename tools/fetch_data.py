@@ -13,6 +13,8 @@ assets/duel-scripts/ (not in git — this fetches it again).
                          (no text: the engine doesn't need it)
   system.json            EDOPro's own texts, by number — what a choice says when a script names one of them
                          ("Add to hand", 573) — {number: text}, from Project Ignis Distribution's config/strings.conf
+  shared.json            the shared rule files as one — {name: text} — so a duel asks for them once, not one after
+                         another (engine-worker.js); --shared makes it again from the files here, fetching nothing
   version.json           the versions fetched, and when
   last-update.json       what the last --update brought: the new cards, the cards that got their script
 
@@ -76,6 +78,13 @@ def scripts():
 
 NAMES = {}     # (each card's name, as cards() reads it: to say which cards are new)
 REPOS = (("scripts", "SCRIPTS_AT", "CardScripts"), ("cdb", "CDB_AT", "BabelCDB"), ("system", "SYSTEM_AT", "Distribution"))
+
+
+def shared():
+    """shared.json: the rule files beside official/ (constant.lua, utility.lua, proc_*.lua…) as one file."""
+    out = {f.name: f.read_text(encoding="utf-8", errors="replace") for f in sorted(OUT.glob("*.lua"))}
+    (OUT / "shared.json").write_text(json.dumps(out, separators=(",", ":"), ensure_ascii=False), encoding="utf-8")
+    return len(out)
 
 
 def cards():
@@ -200,6 +209,7 @@ def update():
     OUT.mkdir(parents=True, exist_ok=True)
     print("Fetching the card scripts…")
     n = scripts()
+    shared()
     print("Reading the card database…")
     c = cards()
     print("Reading EDOPro's own texts…")
@@ -232,6 +242,9 @@ def main():
     if "--update" in sys.argv:
         update()
         return
+    if "--shared" in sys.argv:
+        print(f"{OUT}: {shared()} rule files in shared.json")
+        return
     OUT.mkdir(parents=True, exist_ok=True)
     versions = {**pins(), "date": datetime.date.today().isoformat()}
     if "--system" in sys.argv:                    # (--system: EDOPro's own texts again, the rest as it is)
@@ -242,6 +255,7 @@ def main():
     if "--cards" not in sys.argv:                 # (--cards: the card data again, the scripts as they are)
         print("Fetching the card scripts…")
         n = scripts()
+        shared()
     print("Reading the card database…")
     c = cards()
     print("Reading EDOPro's own texts…")

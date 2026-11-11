@@ -136,11 +136,17 @@ export function start(o) {
   const big = code => (info[code] || {}).big || `https://images.ygoprodeck.com/images/cards/${code}.jpg`;
   const worker = new Worker(new URL('./engine-worker.js', import.meta.url), { type: 'module' });
   let cards = {}, strs = {}, sys = {};
-  fetch((o.scripts || '/duel-scripts/') + 'cards.json').then(r => r.json()).then(c => { cards = c; }).catch(() => {});
-  // (each card's effect texts: what an effect's button says — "Special Summon 1 "Power Patron" monster")
-  fetch((o.scripts || '/duel-scripts/') + 'strings.json').then(r => r.json()).then(t => { strs = t; }).catch(() => {});
-  // (EDOPro's own texts, by number: what a choice says when a script names one — 573 "Add the card(s) to your hand")
-  fetch((o.scripts || '/duel-scripts/') + 'system.json').then(r => r.json()).then(t => { sys = t; }).catch(() => {});
+  // (the data asked for by its version — "?v=", as engine-worker.js does: the site lets a browser keep it, so a second
+  //  duel reads it from there)
+  const data = o.scripts || '/duel-scripts/';
+  fetch(data + 'version.json').then(r => (r.ok ? r.json() : null)).catch(() => null).then(vj => {
+    const v = vj && vj.scripts ? '?v=' + String(vj.scripts).slice(0, 10) + String(vj.cdb || '').slice(0, 10) : '';
+    fetch(data + 'cards.json' + v).then(r => r.json()).then(c => { cards = c; }).catch(() => {});
+    // (each card's effect texts: what an effect's button says — "Special Summon 1 "Power Patron" monster")
+    fetch(data + 'strings.json' + v).then(r => r.json()).then(t => { strs = t; }).catch(() => {});
+    // (EDOPro's own texts, by number: what a choice says when a script names one — 573 "Add the card(s) to your hand")
+    fetch(data + 'system.json' + v).then(r => r.json()).then(t => { sys = t; }).catch(() => {});
+  });
   let field = null, ask = null, over = false, winner = -1, uidN = 0, turnPlayer = 0, turns = 0;
   // (each side's foils and frames on its cards — o.me.looks / o.bot.looks: {foils, frames} by "card:<id>", as the
   //  owner's deck brought them — so the other player sees them too)
@@ -379,7 +385,11 @@ export function start(o) {
     if (targeting) { for (const d of document.querySelectorAll('.rd-target, .rd-picked')) d.classList.remove('rd-target', 'rd-picked'); targeting = null; }
     o.ui.prompt(null); highlight([]);
     if (o.onAnswer) o.onAnswer(r);
-    if (o.online) o.online.send(sides(r)); else worker.postMessage({ t: 'answer', r });
+    // (online: your answer is played here at once — the engine was waiting on you, so it's the room's next answer
+    //  whatever the other player does — and sent to the room; it comes back in the room's log like every answer, and
+    //  is let pass then (apply): the next prompt doesn't wait for the round trip)
+    if (o.online) { const x = sides(r); ahead.push(JSON.stringify(x)); engineAsk = null; askedAhead = null; worker.postMessage({ t: 'answer', r: x }); o.online.send(x); }
+    else worker.postMessage({ t: 'answer', r });
   };
   // a zone to pick: the ones you can, lit on the field (the Extra Monster Zones are in your board's row: theirs
   // too, their left being your right)
@@ -752,17 +762,19 @@ export function start(o) {
     engineAsk = ask;
     if ((o.online || o.replay) && feed()) { ask = null; return; }   // (an answer already in: given, no prompt)
     // (o.onAsk(player): the engine waits on a player — 0 the one at the bottom — every answer given it played: a page's
-    //  clock runs for them)
-    if (ask && o.onAsk) o.onAsk(ask.player);
+    //  clock runs for them. Online, with answers of yours played here and not yet back from the room: said once they are —
+    //  the page's clocks go by the room's times)
+    if (ask && o.onAsk) { if (ahead.length) askedAhead = ask.player; else o.onAsk(ask.player); }
     if (ask && o.replay) { const p = ask.player; ask = null;
                            o.ui.prompt({ mode: 'wait', title: spec ? `${who(p)} is thinking` : 'The replay — its buttons below', text: '', buttons: [] }); if (o.onIdle) o.onIdle(); return; }
     if (ask && o.online && ask.player !== 0) { ask = null; o.ui.prompt({ mode: 'wait', title: `${o.bot.name} is thinking`, text: '', buttons: [] }); }
     else if (ask) promptFor(ask);
     else o.ui.prompt({ mode: 'wait', title: `${o.bot.name} is playing`, text: '', buttons: [] });
   };
-  // (online: the answers in the room's order, each given when the engine waits for one)
-  const pending = [];
-  let engineAsk = null;
+  // (online: the answers in the room's order, each given when the engine waits for one; ahead: your own, played here
+  //  already and not yet back from the room — each as it was sent)
+  const pending = [], ahead = [];
+  let engineAsk = null, askedAhead = null;
   // (one from the player the engine isn't asking: dropped — a browser answers only for its own side)
   function feed() {
     while (engineAsk && pending.length) {
@@ -780,6 +792,16 @@ export function start(o) {
                        bots: o.bots || (o.online || o.spectator ? [false, false] : [false, true]), level: o.level, names, scripts: o.scripts || '/duel-scripts/',
                        speed: o.speed || 'normal', seed: o.seed || Math.floor(Math.random() * 2 ** 31) + 1 });
   return { stop: () => worker.terminate(), replay: () => worker.postMessage({ t: 'replay' }), speed: v => worker.postMessage({ t: 'speed', v }),
-           apply: (r, mine) => { pending.push({ r, mine: !!mine }); feed(); },
+           // (an answer from the room's log — false: one of yours, played here when you gave it. One that came back
+           //  other than as sent: o.onLost() — the page starts again from the room's log)
+           apply: (r, mine) => {
+             if (mine && ahead.length) {
+               if (ahead.shift() !== JSON.stringify(r)) { console.warn('[online] an answer of yours came back changed'); if (o.onLost) o.onLost(); }
+               if (!ahead.length && askedAhead !== null) { const p = askedAhead; askedAhead = null; setTimeout(() => { if (o.onAsk) o.onAsk(p); }, 0); }
+               return false;
+             }
+             pending.push({ r, mine: !!mine }); feed();
+             return true;
+           },
            busy: () => pending.length };           // (answers given, not yet played)
 }

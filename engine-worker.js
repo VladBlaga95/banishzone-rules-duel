@@ -52,6 +52,10 @@ let spec = null, choose = null, practiceOver = false;
 // own recorded choice, when the same cards are there to choose. Anything else — a move no line has, a choice that
 // can't be made as recorded — is its usual play (lookahead.js, bot.js).
 let lines = [], cur = null, lineTurn = -1;
+// the engine's memory — its whole state: a bot's trial is played on the duel, then this put back (lookahead.js);
+// quiet: no script errors reported while a trial runs
+let quiet = false;
+const heapOf = () => { const m = lib && lib[Symbol.for('OcgCoreInternal')] && lib[Symbol.for('OcgCoreInternal')].module; return (m && m.HEAPU8) || null; };
 const baseOf = code => (cards[code] && cards[code][0]) || code;        // (an alternate artwork: the card it is)
 const IDLE = m => [m.summons, m.special_summons, m.pos_changes, m.monster_sets, m.spell_sets, m.activates];
 const fixed = r => (r && r.type === 16 ? { ...r, races: (r.races || []).map(x => BigInt(x)) } : r);   // (a Type: 64-bit)
@@ -208,15 +212,40 @@ function cardData(code) {
   return { code, alias: c[0], setcodes: c[1], type: c[2], level: c[3], attribute: c[4], race: BigInt(c[5]),
            attack: c[6], defense: c[7], lscale: c[8], rscale: c[9], link_marker: c[10] };
 }
-// a script: the engine asks while it runs, so it's read here and now (a worker may wait on a request)
+// a script: the engine asks while it runs, so one it doesn't have yet is read here and now (a worker may wait on a
+// request) — one request after another, each a trip to the server. So before a duel starts, what it will ask for is
+// fetched together: the rule files as one (shared.json — tools/fetch_data.py) and its cards' scripts all at once
+// (preload); a script read while it runs is then only one a card names as it's played (a Token's, another card's).
+// ver: "?v=<the data's version>" (version.json) on each request — the site lets a browser keep what's asked for so,
+// and both players' browsers ask for the same version.
 const scriptCache = {};
+let ver = '', sharedIn = false;
 function script(name) {
   if (name in scriptCache) return scriptCache[name];
-  const path = /^c\d+\.lua$/.test(name) ? 'official/' + name : name;
+  const card = /^c\d+\.lua$/.test(name);
+  // (a rule file that isn't among the shared ones — the engine asks for some that needn't exist — and no card's script)
+  if (card ? name === 'c0.lua' : sharedIn) return (scriptCache[name] = null);
+  const path = card ? 'official/' + name : name;
   const x = new XMLHttpRequest();
-  x.open('GET', base + path, false);
+  x.open('GET', base + path + ver, false);
   try { x.send(); } catch { return (scriptCache[name] = null); }
   return (scriptCache[name] = x.status === 200 ? x.responseText : null);
+}
+// these cards' scripts, fetched together (a card with none — a Normal Monster — asked for nothing; an alternate
+// artwork: its own and the card's it is)
+async function preload(codes) {
+  const want = new Set();
+  for (const code of new Set(codes)) {
+    const c = cards[code], name = `c${code}.lua`;
+    if (!c) continue;
+    if (!c[0] && !c[11]) { if (!(name in scriptCache)) scriptCache[name] = null; continue; }
+    want.add(name);
+    if (c[0]) want.add(`c${c[0]}.lua`);
+  }
+  await Promise.all([...want].filter(n => !(n in scriptCache)).map(async n => {
+    try { const r = await fetch(base + 'official/' + n + ver); scriptCache[n] = r.ok ? await r.text() : null; }
+    catch { /* (not reached now: read when the engine asks) */ }
+  }));
 }
 
 // the field as it is: each player's piles and zones, the cards' codes, positions and stats
@@ -296,7 +325,7 @@ function makeDuel(real) {
     team1: { startingLP: lp, startingDrawCount: hand ? spec.handDraw : board ? 6 : open, drawCountPerTurn: draw },
     team2: { startingLP: board ? board.lp : lp, startingDrawCount: board || !decks[1].main.length ? 0 : open, drawCountPerTurn: draw },
     cardReader: cardData, scriptReader: script,
-    errorHandler: real ? (type, text) => postMessage({ t: 'log', text: String(text) }) : () => {},
+    errorHandler: real ? (type, text) => { if (!quiet) postMessage({ t: 'log', text: String(text) }); } : () => {},
   });
   for (const f of ['constant.lua', 'utility.lua']) lib.loadScript(h, f, script(f));
   decks.forEach((deck, team) => {
@@ -348,10 +377,17 @@ onmessage = async e => {
       base = d.scripts;
       bots = d.bots;
       speed = { slow: 1.7, normal: 1, fast: .4 }[d.speed] || 1;
-      const [cj, wasm] = await Promise.all([fetch(base + 'cards.json').then(r => r.json()),
-                                            fetch(new URL('./vendor/ocgcore-wasm/ocgcore.sync.wasm', import.meta.url)).then(r => r.arrayBuffer())]);
+      const vj = await fetch(base + 'version.json').then(r => (r.ok ? r.json() : null)).catch(() => null);
+      ver = vj && vj.scripts ? '?v=' + String(vj.scripts).slice(0, 10) + String(vj.cdb || '').slice(0, 10) : '';
+      const [cj, wasm, shared] = await Promise.all([fetch(base + 'cards.json' + ver).then(r => r.json()),
+                                                    fetch(new URL('./vendor/ocgcore-wasm/ocgcore.sync.wasm', import.meta.url)).then(r => r.arrayBuffer()),
+                                                    fetch(base + 'shared.json' + ver).then(r => (r.ok ? r.json() : null)).catch(() => null)]);
       cards = cj;
-      lib = await createCore({ sync: true, wasmBinary: wasm });
+      if (shared) { sharedIn = true; for (const [n, text] of Object.entries(shared)) if (!(n in scriptCache)) scriptCache[n] = text; }
+      // (the engine made ready while the duel's scripts come: both decks', a hand's, an endboard's, the bot's combos')
+      const all = [...d.decks.flatMap(k => [...k.main, ...k.extra]), ...(d.hand || []), ...((d.board && d.board.cards) || []).map(c => c.code),
+                   ...(d.combos || []).flatMap(c => [...(c.main || []), ...(c.extra || []), ...(c.hand || [])])];
+      [lib] = await Promise.all([createCore({ sync: true, wasmBinary: wasm }), preload(all)]);
       const s = BigInt(d.seed || Math.floor(Math.random() * 2 ** 31) + 1);
       // (the Deck in the order given: shuffled here, from the seed)
       const shuffle = shuffler(s);
@@ -362,7 +398,9 @@ onmessage = async e => {
       // (an endboard with no deck behind it, or the Combo Lab's empty field: the practice is your turn)
       spec.endAfterTurn = (!!d.board && !d.decks[1].main.length) || !!d.lab;
       handle = makeDuel(true);
-      choose = [0, 1].map(seat => lookahead({ lib, makeDuel: () => makeDuel(false), decide, seat }));
+      // (the bot's trials: on the duel itself, the engine's memory put back after each — lookahead.js)
+      choose = [0, 1].map(seat => lookahead({ lib, makeDuel: () => makeDuel(false), decide, seat, fix: fixed,
+                                              live: heapOf() ? { handle: () => handle, heap: heapOf, quiet: on => { quiet = on; } } : null }));
       const names = d.names || {};
       ctx = { lib, handle, cards: new Proxy({}, { get: (_, k) => { const c = cards[k]; return c && { type: c[2], attack: c[6], defense: c[7], level: c[3], name: names[k] || '' }; } }),
               turn: 0, phase: '', level: d.level || 'normal' };
