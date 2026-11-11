@@ -9,7 +9,9 @@
 //                    ends as your turn does: {t: 'update', practiceOver: true})
 //                   names: {code: name} (the bot reads its cards by name),
 //                   hand?: [codes] your opening hand, in your hand from the start (taken out of your Deck by the page),
-//                   lab?: the Combo Lab's Auto — no one across the field: the duel ends as your turn does, as a practice's)
+//                   lab?: the Combo Lab's Auto — no one across the field: the duel ends as your turn does, as a practice's,
+//                   rules?: the duel's options, as a host sets them — {rules: '' (Master Rule 5) | 'mr4' | 'mr2' | 'goat',
+//                   lp, hand (cards drawn to start), draw (cards drawn each turn)})
 //                  {t: 'answer', r}           your answer to the prompt it last sent
 //                  {t: 'speed', v}            how fast the bot's plays go: 'slow' | 'normal' | 'fast'
 //   worker → page  {t: 'update', msgs, field, ask}   what happened (the engine's messages, simplified), the field
@@ -132,10 +134,14 @@ function run() {
 // a duel as this one began — the real one (logged), or a copy for a trial
 function makeDuel(real) {
   const { s, decks, board, hand } = spec;
+  // (the duel's options: its rules, LP, opening hand and draws a turn — EDOPro's defaults if none)
+  const R = spec.rules || {};
+  const mode = { mr4: OcgDuelMode.MODE_MR4, mr2: OcgDuelMode.MODE_MR2, goat: OcgDuelMode.MODE_GOAT }[R.rules] || OcgDuelMode.MODE_MR5;
+  const lp = R.lp || 8000, open = R.hand ?? 5, draw = R.draw ?? 1;
   const h = lib.createDuel({
-    flags: OcgDuelMode.MODE_MR5 | (board ? OcgDuelMode.ATTACK_FIRST_TURN : 0n), seed: [s, s * 3n + 1n, s * 7n + 5n, s * 11n + 9n],
-    team1: { startingLP: 8000, startingDrawCount: board ? 6 : hand ? 0 : 5, drawCountPerTurn: 1 },
-    team2: { startingLP: board ? board.lp : 8000, startingDrawCount: board || !decks[1].main.length ? 0 : 5, drawCountPerTurn: 1 },
+    flags: mode | (board ? OcgDuelMode.ATTACK_FIRST_TURN : 0n), seed: [s, s * 3n + 1n, s * 7n + 5n, s * 11n + 9n],
+    team1: { startingLP: lp, startingDrawCount: board ? 6 : hand ? 0 : open, drawCountPerTurn: draw },
+    team2: { startingLP: board ? board.lp : lp, startingDrawCount: board || !decks[1].main.length ? 0 : open, drawCountPerTurn: draw },
     cardReader: cardData, scriptReader: script,
     errorHandler: real ? (type, text) => postMessage({ t: 'log', text: String(text) }) : () => {},
   });
@@ -202,7 +208,8 @@ onmessage = async e => {
       const EXTRA = 0x40 | 0x2000 | 0x800000 | 0x4000000;
       const isExtra = code => ((cards[code] || [])[2] & EXTRA) !== 0;
       d.decks = d.decks.map(k => { const all = [...k.main, ...k.extra]; return { main: all.filter(c => !isExtra(c)), extra: all.filter(isExtra) }; });
-      spec = { s, decks: d.decks.map(k => ({ main: shuffle(k.main), extra: k.extra })), board: d.board || null, hand: d.hand && d.hand.length ? d.hand : null };
+      spec = { s, decks: d.decks.map(k => ({ main: shuffle(k.main), extra: k.extra })), board: d.board || null, hand: d.hand && d.hand.length ? d.hand : null,
+               rules: d.rules || null };
       // (an endboard with no deck behind it, or the Combo Lab's empty field: the practice is your turn)
       spec.endAfterTurn = (!!d.board && !d.decks[1].main.length) || !!d.lab;
       handle = makeDuel(true);

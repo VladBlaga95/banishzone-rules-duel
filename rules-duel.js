@@ -112,9 +112,12 @@ export function start(o) {
   // (the Combo Lab's Auto — o.lab: no one across the field; o.hand: your opening hand, those cards out of your Deck;
   //  o.onAnswer(r): each answer you give, to record; o.replay: no prompts — answers come through apply(), and
   //  o.onIdle() says when the engine waits for the next)
+  // (o.spectator — watching an Auto duel, or its replay: no seat, both players' answers through apply(), o.me the
+  //  player at the bottom by name; o.showHands: both hands and Extra Decks shown (a caster, a replay), else hidden)
   const hand = (o.hand || []).filter(code => { const i = mineCodes.main.indexOf(code); if (i < 0) return false; mineCodes.main.splice(i, 1); return true; });
   const names = Object.fromEntries(Object.entries(info).map(([k, v]) => [k, v.name]));
-  const who = p => p === 0 ? 'You' : o.bot.name;
+  const spec = !!o.spectator, seeAll = !!o.showHands, seeOwn = !spec || seeAll;
+  const who = p => p === 0 ? (spec ? o.me.name : 'You') : o.bot.name;
   const nm = code => (info[code] || {}).name || 'a card';
   const img = code => (info[code] || {}).img || `https://images.ygoprodeck.com/images/cards_small/${code}.jpg`;
   const big = code => (info[code] || {}).big || `https://images.ygoprodeck.com/images/cards/${code}.jpg`;
@@ -296,7 +299,7 @@ export function start(o) {
     if (m.type === 110) lastActor = m.card.controller;
     switch (m.type) {
       case 40: turnPlayer = m.player; lastActor = -1; o.ui.log(`<div class="t">Turn ${m.turnNo || ''} — ${esc(who(m.player))}</div>`);
-        o.ui.banner && o.ui.banner(m.player === 0 ? 'Your turn' : 'The bot’s turn', m.player); break;
+        o.ui.banner && o.ui.banner(spec ? `${who(m.player)}’s turn` : m.player === 0 ? 'Your turn' : 'The bot’s turn', m.player); break;
       case 41: curPhase = `${turns}:${m.phase}`; o.ui.phase({ player: turnPlayer, who: who(turnPlayer), phase: m.phase, name: PHASES[m.phase] || '', turn: turns }); break;
       case 60: o.ui.log(`${by(m.controller)} Normal Summoned ${esc(nm(m.code))}`); plays.push({ kind: 'normal', ...m }); break;
       case 62: o.ui.log(`${by(m.controller)} Special Summoned ${esc(nm(m.code))}`); plays.push({ kind: 'special', ...m }); break;
@@ -307,10 +310,12 @@ export function start(o) {
         chain.push({ n: m.chain_size || chain.length + 1, code: m.code, controller: m.controller, location: m.location, sequence: m.sequence });
         plays.push({ kind: 'activate', ...m });
         // (the other side's activation: its card big for a moment with the effect it used, so you see what it played)
-        if (m.controller === 1 && o.ui.flash) o.ui.flash({ code: m.code, name: nm(m.code), big: big(m.code), link: chain.length, text: effectText(m.description) || '' });
+        if ((m.controller === 1 || spec) && o.ui.flash) o.ui.flash({ code: m.code, name: nm(m.code), big: big(m.code), link: chain.length, text: effectText(m.description) || '',
+                                                             ...(spec ? { label: `${who(m.controller)} activates` } : {}) });
         break;
       case 31: {   // cards shown to you (CONFIRM_CARDS) — the other player's: shown big, each named in the log
         const theirs = (m.cards || []).filter(c => c.controller !== m.player && c.code);
+        if (spec && theirs.length) { o.ui.log(`Shown to ${by(m.player)} — ${by(1 - m.player)}’s ${theirs.map(c => esc(nm(c.code))).join(', ')}`); break; }
         if (m.player !== 0 || !theirs.length) break;
         o.ui.log(`Shown to you — ${by(1)}’s ${theirs.map(c => esc(nm(c.code))).join(', ')}`);
         if (o.ui.flash) o.ui.flash({ code: theirs[0].code, name: nm(theirs[0].code), big: big(theirs[0].code), label: theirs.length > 1 ? `Revealed · ${theirs.length} cards` : 'Revealed' });
@@ -320,11 +325,12 @@ export function start(o) {
       case 74: chain = []; targeted = []; break;
       case 83: for (const c of m.cards || []) targeted.push(`${c.controller}:${c.location}:${c.sequence}`); break;   // (BECOME_TARGET)
       case 110: o.ui.log(`${by(m.card.controller)} attacked${m.target ? '' : ' directly'}`); break;
-      case 90: if (m.player === 0) o.ui.log(`You drew ${m.drawn.map(d => esc(nm(d.code))).join(', ')}`); else o.ui.log(`${by(1)} drew ${m.drawn.length}`); break;
+      case 90: if (spec) o.ui.log(`${by(m.player)} drew ${seeAll ? m.drawn.map(d => esc(nm(d.code))).join(', ') : m.drawn.length}`);
+        else if (m.player === 0) o.ui.log(`You drew ${m.drawn.map(d => esc(nm(d.code))).join(', ')}`); else o.ui.log(`${by(1)} drew ${m.drawn.length}`); break;
       case 91: o.ui.log(`${by(m.player)} took ${m.amount} damage`); fx.lp[m.player] -= m.amount; break;
       case 92: o.ui.log(`${by(m.player)} gained ${m.amount} LP`); fx.lp[m.player] += m.amount; break;
       case 100: o.ui.log(`${by(m.player)} paid ${m.amount} LP`); fx.lp[m.player] -= m.amount; break;
-      case 5: over = true; winner = m.player; o.ui.log(`<div class="t">${m.player === 0 ? 'You win!' : esc(o.bot.name) + ' wins.'}</div>`); break;
+      case 5: over = true; winner = m.player; o.ui.log(`<div class="t">${m.player === 0 && !spec ? 'You win!' : esc(who(m.player)) + ' wins.'}</div>`); break;
       case 1: o.ui.log('<span class="sys">The engine refused that — choose again.</span>'); break;
     }
   }
@@ -653,17 +659,17 @@ export function start(o) {
       o.ui.menu(acts, d, reply);
       return;
     }
-    if (cardOf[u] && !(d.classList.contains('down') && d.closest('.cboard') === o.boards.theirs.el)) zoom(u);
+    if (cardOf[u] && !(d.classList.contains('down') && (d.closest('.cboard') === o.boards.theirs.el ? !seeAll : !seeOwn))) zoom(u);
   }
   // a pile's cards in a sheet: yours face-up (your Extra Deck too), theirs face-up but for their Extra Deck
   function openPile(side, zone) {
     const s = last[side];
     if (!s) return;
     const uids = s.zones[zone] || [];
-    const hidden = u => side === 'theirs' && zone === 'extra' && (s.flags[u] || {}).face === 'down';
+    const hidden = u => (side === 'theirs' ? !seeAll : !seeOwn) && zone === 'extra' && (s.flags[u] || {}).face === 'down';
     const name = { extra: 'Extra Deck', gy: 'GY', banished: 'banished cards' }[zone];
     o.ui.sheet({
-      title: `${side === 'mine' ? 'Your' : o.bot.name + '’s'} ${name}`,
+      title: `${side === 'mine' ? (spec ? o.me.name + '’s' : 'Your') : o.bot.name + '’s'} ${name}`,
       text: uids.length ? (uids.some(u => onCard[u]) ? 'The lit cards can be used now — tap one.' : '') : 'Empty.',
       cards: uids.filter(u => !hidden(u)).map(u => ({ code: cardOf[u], label: nm(cardOf[u]), uid: u, acts: (ask && onCard[u]) || [] })),
       more: uids.filter(hidden).length ? `${uids.filter(hidden).length} face-down` : '',
@@ -730,7 +736,11 @@ export function start(o) {
     ask = d.ask;
     engineAsk = ask;
     if ((o.online || o.replay) && feed()) { ask = null; return; }   // (an answer already in: given, no prompt)
-    if (ask && o.replay) { ask = null; o.ui.prompt({ mode: 'wait', title: 'The replay — its buttons below', text: '', buttons: [] }); if (o.onIdle) o.onIdle(); return; }
+    // (o.onAsk(player): the engine waits on a player — 0 the one at the bottom — every answer given it played: a page's
+    //  clock runs for them)
+    if (ask && o.onAsk) o.onAsk(ask.player);
+    if (ask && o.replay) { const p = ask.player; ask = null;
+                           o.ui.prompt({ mode: 'wait', title: spec ? `${who(p)} is thinking` : 'The replay — its buttons below', text: '', buttons: [] }); if (o.onIdle) o.onIdle(); return; }
     if (ask && o.online && ask.player !== 0) { ask = null; o.ui.prompt({ mode: 'wait', title: `${o.bot.name} is thinking`, text: '', buttons: [] }); }
     else if (ask) promptFor(ask);
     else o.ui.prompt({ mode: 'wait', title: `${o.bot.name} is playing`, text: '', buttons: [] });
@@ -749,9 +759,11 @@ export function start(o) {
     }
     return false;
   }
-  worker.postMessage({ t: 'start', decks, board, hand: hand.length ? hand : null, lab: !!o.lab,
-                       bots: o.bots || (o.online ? [false, false] : [false, true]), level: o.level, names, scripts: o.scripts || '/duel-scripts/',
+  // (o.rules: the duel's options — its rules, LP, opening hand, draws a turn: engine-worker.js)
+  worker.postMessage({ t: 'start', decks, board, hand: hand.length ? hand : null, lab: !!o.lab, rules: o.rules || null,
+                       bots: o.bots || (o.online || o.spectator ? [false, false] : [false, true]), level: o.level, names, scripts: o.scripts || '/duel-scripts/',
                        speed: o.speed || 'normal', seed: o.seed || Math.floor(Math.random() * 2 ** 31) + 1 });
   return { stop: () => worker.terminate(), replay: () => worker.postMessage({ t: 'replay' }), speed: v => worker.postMessage({ t: 'speed', v }),
-           apply: (r, mine) => { pending.push({ r, mine: !!mine }); feed(); } };
+           apply: (r, mine) => { pending.push({ r, mine: !!mine }); feed(); },
+           busy: () => pending.length };           // (answers given, not yet played)
 }
