@@ -109,7 +109,8 @@ export function start(o) {
   const seat = o.seat ? 1 : 0, sides = x => (seat ? swapSides(x) : x);
   const mineCodes = deckCodes(o.me.deck, info), theirCodes = o.bot.deck ? deckCodes(o.bot.deck, info) : { main: [], extra: [] };
   const decks = seat ? [theirCodes, mineCodes] : [mineCodes, theirCodes];
-  // (the Combo Lab's Auto — o.lab: no one across the field; o.hand: your opening hand, those cards out of your Deck;
+  // (the Combo Lab's Auto — o.lab: no one across the field; o.hand: your opening hand, those cards out of your Deck —
+  //  o.handDraw: cards drawn on top of it, a puzzle's draw for the turn;
   //  o.onAnswer(r): each answer you give, to record; o.replay: no prompts — answers come through apply(), and
   //  o.onIdle() says when the engine waits for the next)
   // (o.spectator — watching an Auto duel, or its replay: no seat, both players' answers through apply(), o.me the
@@ -729,7 +730,8 @@ export function start(o) {
     }
     markEmz(mine);
     for (const k of targeted) { const u = at[k]; for (const b of [o.boards.mine, o.boards.theirs]) if (u && b.cardEl[u]) b.cardEl[u].classList.add('rd-tgt'); }
-    if (o.onUpdate) o.onUpdate(mine, theirs);           // (the boards as they are now: a page's own counts and plates)
+    if (o.onUpdate) o.onUpdate(mine, theirs, field);    // (the boards as they are now: a page's own counts and plates — and the
+                                                        //  engine's field, [you, them]: a puzzle's goal checked on it)
     fx.lp = [0, 0];
     if (d.practiceOver) { over = true; o.ui.prompt(null); o.onPractice && o.onPractice(field); return; }
     if (over) { o.ui.prompt(null); o.onEnd && o.onEnd(winner === 0); return; }
@@ -760,7 +762,7 @@ export function start(o) {
     return false;
   }
   // (o.rules: the duel's options — its rules, LP, opening hand, draws a turn: engine-worker.js)
-  worker.postMessage({ t: 'start', decks, board, hand: hand.length ? hand : null, lab: !!o.lab, rules: o.rules || null,
+  worker.postMessage({ t: 'start', decks, board, hand: hand.length ? hand : null, handDraw: o.handDraw || 0, lab: !!o.lab, rules: o.rules || null,
                        bots: o.bots || (o.online || o.spectator ? [false, false] : [false, true]), level: o.level, names, scripts: o.scripts || '/duel-scripts/',
                        speed: o.speed || 'normal', seed: o.seed || Math.floor(Math.random() * 2 ** 31) + 1 });
   return { stop: () => worker.terminate(), replay: () => worker.postMessage({ t: 'replay' }), speed: v => worker.postMessage({ t: 'speed', v }),
