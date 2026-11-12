@@ -39,6 +39,9 @@ let botActive = false, speed = 1;
 const STEP_MS = { 70: 620, 60: 540, 62: 540, 64: 540, 110: 500, 91: 420, 92: 420, 100: 360, 54: 360, 53: 300, 50: 280, 90: 200, 73: 180 };
 const BEAT_MS = 220;
 const answers = [];
+// (each answer's player, and whether the engine would have given it itself — a chain prompt with nothing to chain,
+//  passed — so a replay that answers for both players leaves those to the engine: a puzzle's recorded solution)
+const answeredBy = [], answeredAuto = [];
 // the duel as it began (its seed, the Decks in their shuffled order), to make copies of it: the bot's trials
 let spec = null, choose = null, practiceOver = false;
 
@@ -366,6 +369,8 @@ ${board.mods.map(m => `rd_mod(1, ${m.sequence}, ${n(m.atk)}, ${n(m.def)}, ${n(m.
 }
 function answer(r) {
   answers.push(r);
+  answeredBy.push(lastAsk ? lastAsk.player : 0);
+  answeredAuto.push(!!lastAsk && lastAsk.type === 16 && !lastAsk.selects.length && !lastAsk.forced);
   lib.duelSetResponse(handle, fixed(r));
 }
 function post(msgs, ask, practice) { postMessage({ t: 'update', msgs: plain(msgs), field: field(), ask: ask && plain(ask), turn: ctx.turn, practiceOver: !!practice }); }
@@ -418,7 +423,7 @@ onmessage = async e => {
     } else if (d.t === 'speed') {
       speed = { slow: 1.7, normal: 1, fast: .4 }[d.v] || 1;
     } else if (d.t === 'replay') {
-      postMessage({ t: 'replay', answers: plain(answers) });
+      postMessage({ t: 'replay', answers: plain(answers), players: answeredBy.slice(), autos: answeredAuto.slice() });
     }
   } catch (err) {
     postMessage({ t: 'error', text: String(err && err.stack || err) });

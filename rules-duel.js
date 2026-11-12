@@ -705,7 +705,7 @@ export function start(o) {
     const d = e.data;
     if (d.t === 'error') { o.ui.log(`<span class="err">${esc(d.text.split('\n')[0])}</span>`); console.error(d.text); return; }
     if (d.t === 'log') { console.warn('[engine]', d.text); return; }
-    if (d.t === 'replay') { o.onReplay && o.onReplay(d.answers); return; }
+    if (d.t === 'replay') { o.onReplay && o.onReplay(d.answers, d); return; }    // (d.players, d.autos: engine-worker.js)
     if (d.t === 'combos') { o.onCombos && o.onCombos(d); return; }
     if (d.t !== 'update') return;
     if (seat) { d.msgs = swapSides(d.msgs); d.ask = swapSides(d.ask); d.field = [d.field[1], d.field[0]]; }

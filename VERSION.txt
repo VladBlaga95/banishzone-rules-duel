@@ -1,2 +1,2 @@
-This is assets/duel-engine of BanishZone at commit 3f27c4fa97a410eef2adc04fb6f3af727e5e1bfa 2026-11-11,
+This is assets/duel-engine of BanishZone at commit cb70322e4e9bc8f86ad006d1aa50d462d8a87abc 2026-11-12,
 the code the Rules Duel runs on sim.banishzone.ro and in the BanishZone Tools app.
